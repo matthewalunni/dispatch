@@ -24,8 +24,12 @@ type Context struct {
 
 // Role is a declarative agent specialism loaded from YAML.
 type Role struct {
-	Name         string        `yaml:"name" json:"name"`
-	Description  string        `yaml:"description" json:"description"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description" json:"description"`
+	// Extends names another role to inherit from. The child's own fields win
+	// field by field, so `security-reviewer` can extend `reviewer` and state
+	// only what differs.
+	Extends      string        `yaml:"extends" json:"extends,omitempty"`
 	Runtime      string        `yaml:"runtime" json:"runtime"`
 	Isolation    IsolationMode `yaml:"isolation" json:"isolation"`
 	Context      Context       `yaml:"context" json:"context"`
@@ -43,6 +47,8 @@ type Role struct {
 	Source string `yaml:"-" json:"source,omitempty"`
 	// Origin is "global", "project" or "merged".
 	Origin string `yaml:"-" json:"origin,omitempty"`
+	// Inherits is the resolved extends chain, nearest ancestor first.
+	Inherits []string `yaml:"-" json:"inherits,omitempty"`
 }
 
 // Validate checks a role after loading and merging.
@@ -126,6 +132,9 @@ func (r Role) MergeOver(base Role) Role {
 	}
 	if r.Source != "" {
 		out.Source = r.Source
+	}
+	if r.Extends != "" {
+		out.Extends = r.Extends
 	}
 	return out
 }

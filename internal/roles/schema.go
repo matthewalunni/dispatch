@@ -32,11 +32,13 @@ func Describe() Schema {
 		ResolutionOrder: []string{
 			"global role (~/.config/dispatch/roles/<name>.yaml)",
 			"project role (<repo>/.dispatch/roles/<name>.yaml)",
+			"extends chain (resolved after the global and project layers)",
 			"task options (--runtime, --isolation, --branch, ...)",
 		},
 		Fields: []Field{
 			{Name: "name", Type: "string", Required: true, Doc: "Role identifier matched by --role. Lowercase letters, digits, '-' and '_'."},
 			{Name: "description", Type: "string", Doc: "One-line summary shown by `dispatch roles`."},
+			{Name: "extends", Type: "string", Doc: "Inherit from another role. The child's own fields win field by field, so it only states what differs. Chains are allowed; cycles are rejected."},
 			{Name: "runtime", Type: "string", Required: true, Default: "claude", Doc: "Agent runtime to launch. Must be defined in config.yaml `runtimes`."},
 			{Name: "isolation", Type: "enum", Required: true, Default: "none", Doc: "Workspace dispatch prepares: none | worktree."},
 			{Name: "context.repository", Type: "bool", Doc: "Tell the agent it is operating inside an existing project."},

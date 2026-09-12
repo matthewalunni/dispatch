@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -78,6 +77,11 @@ type model struct {
 	// Roles screen
 	roleCursor int
 
+	// Live runtime state from herdr's event stream.
+	changes     chan core.Change
+	cancelWatch context.CancelFunc
+	live        bool
+
 	// Transient UI state
 	err     error
 	status  string
@@ -132,7 +136,7 @@ func newModel(app *core.App, version string) *model {
 }
 
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.loadCmd(), tickCmd())
+	return tea.Batch(m.loadCmd(), m.startWatch())
 }
 
 // ---------------------------------------------------------------- messages
@@ -157,10 +161,45 @@ type stoppedMsg struct {
 
 type attachedMsg struct{ err error }
 
-type tickMsg time.Time
+// changeMsg is one signal from herdr that live state moved. The TUI does not
+// trust its payload: it re-reads, because dispatch's own status can move
+// without any herdr event.
+type changeMsg core.Change
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(4*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+// watchEndedMsg means the watcher stopped; the TUI keeps working on whatever
+// the last load showed rather than freezing.
+type watchEndedMsg struct{}
+
+// waitForChange blocks one Bubble Tea command on the next runtime change.
+func waitForChange(ch chan core.Change) tea.Cmd {
+	return func() tea.Msg {
+		change, ok := <-ch
+		if !ok {
+			return watchEndedMsg{}
+		}
+		return changeMsg(change)
+	}
+}
+
+// startWatch subscribes to live runtime changes.
+//
+// core.Watch prefers herdr's event stream and falls back to polling on its
+// own, so the TUI has one path whether or not live events are available.
+func (m *model) startWatch() tea.Cmd {
+	if m.cancelWatch != nil {
+		m.cancelWatch()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelWatch = cancel
+	ch := make(chan core.Change, 32)
+	m.changes = ch
+
+	app := m.app
+	go func() {
+		defer close(ch)
+		_ = app.Watch(ctx, core.WatchOptions{}, ch)
+	}()
+	return waitForChange(ch)
 }
 
 func (m *model) loadCmd() tea.Cmd {
@@ -261,12 +300,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.form.input.Width = maxInt(30, msg.Width-24)
 		return m, nil
 
-	case tickMsg:
+	case changeMsg:
+		m.live = msg.Live
+		next := waitForChange(m.changes)
 		if m.screen == screenNew {
-			// Don't refresh underneath someone who is typing.
-			return m, tickCmd()
+			// Don't reload underneath someone who is typing; the next change
+			// or the form being dismissed will pick the state back up.
+			return m, next
 		}
-		return m, tea.Batch(m.loadCmd(), tickCmd())
+		return m, tea.Batch(m.loadCmd(), next)
+
+	case watchEndedMsg:
+		m.live = false
+		return m, nil
 
 	case loadedMsg:
 		m.loading = false
@@ -340,8 +386,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// ctrl+c always quits; errors never corrupt that.
 	if key == "ctrl+c" {
-		m.quitting = true
-		return m, tea.Quit
+		return m, m.quit()
 	}
 
 	// Dismiss an error banner with any key rather than trapping the user.
@@ -366,8 +411,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc":
 		switch m.screen {
 		case screenHome:
-			m.quitting = true
-			return m, tea.Quit
+			return m, m.quit()
 		case screenHelp:
 			m.screen = m.prev
 		default:
@@ -617,6 +661,17 @@ func (f *form) isolationLabel(rc *core.Context) string {
 		return "role default"
 	}
 	return string(role.Isolation) + dimStyle.Render("  (from role)")
+}
+
+// quit tears down the watcher before leaving, so the event subscription and
+// its goroutine do not outlive the UI.
+func (m *model) quit() tea.Cmd {
+	m.quitting = true
+	if m.cancelWatch != nil {
+		m.cancelWatch()
+		m.cancelWatch = nil
+	}
+	return tea.Quit
 }
 
 func wrap(value, length int) int {

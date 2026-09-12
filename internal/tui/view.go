@@ -48,7 +48,13 @@ func (m *model) viewHeader() string {
 			right += faintStyle.Render(" (not a repo)")
 		}
 	}
-	return fmt.Sprintf("\n  %s  %s\n", title, right)
+	// Say plainly whether status is arriving live from herdr or on the slower
+	// polling fallback, so a stale-looking screen is never a mystery.
+	live := faintStyle.Render("○ polling")
+	if m.live {
+		live = okStyle.Render("● live")
+	}
+	return fmt.Sprintf("\n  %s  %s  %s\n", title, right, live)
 }
 
 func (m *model) viewBanner() string {

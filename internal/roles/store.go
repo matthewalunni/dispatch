@@ -153,7 +153,8 @@ type Set struct {
 	byName map[string]Role
 }
 
-// Resolve merges global and project role directories.
+// Resolve merges global and project role directories, then resolves any
+// `extends` chains between the results.
 func Resolve(globalDir, projectDir string) (*Set, error) {
 	set := &Set{byName: map[string]Role{}}
 
@@ -178,7 +179,82 @@ func Resolve(globalDir, projectDir string) (*Set, error) {
 			set.byName[role.Name] = role
 		}
 	}
+
+	// Composition runs last so a role can extend one that a project defined
+	// or amended, and so `extends` behaves the same wherever it was written.
+	if err := set.resolveInheritance(); err != nil {
+		return nil, err
+	}
 	return set, nil
+}
+
+// ExtendsError describes a broken `extends` chain.
+type ExtendsError struct {
+	Role   string
+	Parent string
+	Chain  []string
+	Cycle  bool
+}
+
+func (e *ExtendsError) Error() string {
+	if e.Cycle {
+		return fmt.Sprintf("role %q has a circular extends chain: %s", e.Role, strings.Join(e.Chain, " -> "))
+	}
+	return fmt.Sprintf("role %q extends %q, which does not exist", e.Role, e.Parent)
+}
+
+// resolveInheritance flattens every `extends` chain in place.
+//
+// Resolution is depth-first with memoisation: a role is only flattened once,
+// however many descendants it has.
+func (s *Set) resolveInheritance() error {
+	resolved := make(map[string]Role, len(s.byName))
+	var resolve func(name string, seen []string) (Role, error)
+
+	resolve = func(name string, seen []string) (Role, error) {
+		if done, ok := resolved[name]; ok {
+			return done, nil
+		}
+		role := s.byName[name]
+		if role.Extends == "" {
+			resolved[name] = role
+			return role, nil
+		}
+		for _, ancestor := range seen {
+			if ancestor == role.Extends {
+				return Role{}, &ExtendsError{Role: seen[0], Chain: append(append([]string{}, seen...), role.Extends), Cycle: true}
+			}
+		}
+		parent, ok := s.byName[role.Extends]
+		if !ok {
+			return Role{}, &ExtendsError{Role: name, Parent: role.Extends}
+		}
+		flatParent, err := resolve(parent.Name, append(seen, role.Extends))
+		if err != nil {
+			return Role{}, err
+		}
+
+		merged := role.MergeOver(flatParent)
+		merged.Name = role.Name
+		merged.Source = role.Source
+		merged.Origin = role.Origin
+		merged.Inherits = append([]string{flatParent.Name}, flatParent.Inherits...)
+		resolved[name] = merged
+		return merged, nil
+	}
+
+	names := make([]string, 0, len(s.byName))
+	for name := range s.byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, err := resolve(name, []string{name}); err != nil {
+			return err
+		}
+	}
+	s.byName = resolved
+	return nil
 }
 
 // Get returns a role by name.

@@ -171,6 +171,14 @@ type Herdr struct {
 	StoppedAgents []string
 	// StartedArgs records the extra argv passed to each launch.
 	StartedArgs map[string][]string
+	// TabEnv records the environment dispatch set on each created tab.
+	TabEnv [][]string
+	// WatchedPanes records the pane set each Watch call subscribed to.
+	WatchedPanes [][]string
+	// EventsUnsupported makes Watch refuse, exercising the polling fallback.
+	EventsUnsupported bool
+
+	listeners []chan herdrx.Event
 }
 
 // Prompt is one assignment submission.
@@ -205,6 +213,7 @@ func (h *Herdr) CreateTab(_ context.Context, req herdrx.CreateTabRequest) (herdr
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.tabCounter++
+	h.TabEnv = append(h.TabEnv, append([]string(nil), req.Env...))
 	return herdrx.Tab{
 		TabID:       fmt.Sprintf("w1:t%d", h.tabCounter),
 		WorkspaceID: "w1",
@@ -290,6 +299,87 @@ func (h *Herdr) AttachCommand(target string) []string {
 	return []string{"herdr", "agent", "attach", target}
 }
 
+// Watch implements herdrx.Watcher. Events are whatever a test pushes through
+// Emit, so the application layer's event handling can be exercised without a
+// socket.
+func (h *Herdr) Watch(ctx context.Context, panes []string, handle func(herdrx.Event)) error {
+	if h.EventsUnsupported {
+		return herdrx.ErrEventsUnsupported
+	}
+	h.mu.Lock()
+	h.WatchedPanes = append(h.WatchedPanes, append([]string(nil), panes...))
+	ch := make(chan herdrx.Event, 32)
+	h.listeners = append(h.listeners, ch)
+	h.mu.Unlock()
+
+	defer func() {
+		h.mu.Lock()
+		for i, listener := range h.listeners {
+			if listener == ch {
+				h.listeners = append(h.listeners[:i], h.listeners[i+1:]...)
+				break
+			}
+		}
+		h.mu.Unlock()
+	}()
+
+	handle(herdrx.Event{Kind: herdrx.EventStreamReady})
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event := <-ch:
+			handle(event)
+		}
+	}
+}
+
+// Emit pushes an event to every active Watch call.
+func (h *Herdr) Emit(event herdrx.Event) {
+	h.mu.Lock()
+	listeners := append([]chan herdrx.Event(nil), h.listeners...)
+	h.mu.Unlock()
+	for _, listener := range listeners {
+		select {
+		case listener <- event:
+		default:
+		}
+	}
+}
+
+// SubscribedTo reports whether any Watch call has asked for a pane's
+// agent-status transitions.
+func (h *Herdr) SubscribedTo(pane string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, set := range h.WatchedPanes {
+		for _, candidate := range set {
+			if candidate == pane {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// SubscribedPanes returns a copy of every pane set Watch has been called with.
+func (h *Herdr) SubscribedPanes() [][]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([][]string, 0, len(h.WatchedPanes))
+	for _, set := range h.WatchedPanes {
+		out = append(out, append([]string(nil), set...))
+	}
+	return out
+}
+
+// WatchCount reports how many Watch calls are currently subscribed.
+func (h *Herdr) WatchCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.listeners)
+}
+
 // SetStatus changes an agent's live state, simulating herdr detection.
 func (h *Herdr) SetStatus(name string, status herdrx.Status) {
 	h.mu.Lock()
@@ -315,4 +405,7 @@ func (h *Herdr) AgentCount() int {
 	return len(h.agents)
 }
 
-var _ herdrx.Client = (*Herdr)(nil)
+var (
+	_ herdrx.Client  = (*Herdr)(nil)
+	_ herdrx.Watcher = (*Herdr)(nil)
+)

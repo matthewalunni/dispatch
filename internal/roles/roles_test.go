@@ -294,3 +294,210 @@ func TestSchemaCoversEveryRequiredField(t *testing.T) {
 		}
 	}
 }
+
+func TestExtendsInheritsAndOverrides(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Seed(dir); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "security-reviewer.yaml", `name: security-reviewer
+description: Security-focused reviewer
+extends: reviewer
+context:
+  extra_discovery:
+    - anywhere untrusted input crosses a trust boundary
+instructions_append: |
+  Rank findings by exploitability.
+`)
+
+	set, err := Resolve(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := set.Get("security-reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Inherited from reviewer, never restated by the child.
+	if role.Runtime != "claude" {
+		t.Errorf("Runtime = %q, want the parent's", role.Runtime)
+	}
+	if role.Isolation != IsolationNone {
+		t.Errorf("Isolation = %q, want the parent's", role.Isolation)
+	}
+	if !strings.Contains(role.Instructions, "You are reviewing, not implementing.") {
+		t.Error("parent instructions not inherited")
+	}
+	// The child's own contributions.
+	if role.Description != "Security-focused reviewer" {
+		t.Errorf("Description = %q, want the child's", role.Description)
+	}
+	if !strings.Contains(role.Instructions, "Rank findings by exploitability.") {
+		t.Error("instructions_append did not apply over the parent")
+	}
+	var found bool
+	for _, item := range role.Context.ExtraDiscovery {
+		if strings.Contains(item, "trust boundary") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("child extra_discovery lost: %v", role.Context.ExtraDiscovery)
+	}
+	if len(role.Context.ExtraDiscovery) <= 1 {
+		t.Errorf("parent extra_discovery should merge in: %v", role.Context.ExtraDiscovery)
+	}
+	if len(role.Inherits) != 1 || role.Inherits[0] != "reviewer" {
+		t.Errorf("Inherits = %v, want [reviewer]", role.Inherits)
+	}
+	// The parent itself must be untouched by having been extended.
+	parent, _ := set.Get("reviewer")
+	if strings.Contains(parent.Instructions, "Rank findings by exploitability.") {
+		t.Error("extending a role mutated the parent")
+	}
+}
+
+func TestExtendsChainsResolveTransitively(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Seed(dir); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "security-reviewer.yaml", `name: security-reviewer
+description: Security reviewer
+extends: reviewer
+runtime: claude
+instructions_append: |
+  Think about exploitability.
+`)
+	write(t, dir, "ios-security-reviewer.yaml", `name: ios-security-reviewer
+description: iOS security reviewer
+extends: security-reviewer
+instructions_append: |
+  Pay attention to Keychain and entitlements.
+`)
+
+	set, err := Resolve(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := set.Get("ios-security-reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"You are reviewing, not implementing.", // grandparent
+		"Think about exploitability.",          // parent
+		"Keychain and entitlements",            // child
+	} {
+		if !strings.Contains(role.Instructions, want) {
+			t.Errorf("instructions missing %q from the chain:\n%s", want, role.Instructions)
+		}
+	}
+	if len(role.Inherits) != 2 || role.Inherits[0] != "security-reviewer" || role.Inherits[1] != "reviewer" {
+		t.Errorf("Inherits = %v, want the chain nearest-first", role.Inherits)
+	}
+}
+
+func TestExtendsMissingParentIsReported(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "child.yaml", "name: child\nextends: nobody\nruntime: claude\nisolation: none\ninstructions: x\n")
+
+	_, err := Resolve(dir, "")
+	if err == nil {
+		t.Fatal("expected an error for a missing parent")
+	}
+	var extendsErr *ExtendsError
+	if !errors.As(err, &extendsErr) {
+		t.Fatalf("err = %v, want an ExtendsError", err)
+	}
+	if !strings.Contains(err.Error(), "nobody") {
+		t.Errorf("error should name the missing parent: %v", err)
+	}
+}
+
+func TestExtendsCycleIsRejectedWithTheChain(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.yaml", "name: a\nextends: b\nruntime: claude\nisolation: none\ninstructions: x\n")
+	write(t, dir, "b.yaml", "name: b\nextends: a\nruntime: claude\nisolation: none\ninstructions: x\n")
+
+	_, err := Resolve(dir, "")
+	if err == nil {
+		t.Fatal("expected a cycle to be rejected")
+	}
+	var extendsErr *ExtendsError
+	if !errors.As(err, &extendsErr) || !extendsErr.Cycle {
+		t.Fatalf("err = %v, want a cycle ExtendsError", err)
+	}
+	if !strings.Contains(err.Error(), "->") {
+		t.Errorf("error should show the chain: %v", err)
+	}
+}
+
+func TestExtendsSelfIsACycle(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.yaml", "name: a\nextends: a\nruntime: claude\nisolation: none\ninstructions: x\n")
+	if _, err := Resolve(dir, ""); err == nil {
+		t.Fatal("a role extending itself should be rejected")
+	}
+}
+
+func TestExtendsResolvesAfterProjectOverrides(t *testing.T) {
+	globalDir := t.TempDir()
+	if _, err := Seed(globalDir); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := t.TempDir()
+	// The project amends the parent...
+	write(t, projectDir, "reviewer.yaml", `name: reviewer
+instructions_append: |
+  Check the CHANGELOG is updated.
+`)
+	// ...and a global child extends it. The child must see the amendment.
+	write(t, globalDir, "security-reviewer.yaml", `name: security-reviewer
+description: Security reviewer
+extends: reviewer
+instructions_append: |
+  Rank by exploitability.
+`)
+
+	set, err := Resolve(globalDir, projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := set.Get("security-reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(role.Instructions, "Check the CHANGELOG is updated.") {
+		t.Errorf("project amendment to the parent did not reach the child:\n%s", role.Instructions)
+	}
+	if !strings.Contains(role.Instructions, "Rank by exploitability.") {
+		t.Error("child's own instructions lost")
+	}
+}
+
+func TestOrchestratorRoleIsSeededAndValid(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Seed(dir); err != nil {
+		t.Fatal(err)
+	}
+	set, err := Resolve(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := set.Get("orchestrator")
+	if err != nil {
+		t.Fatalf("orchestrator role not shipped: %v", err)
+	}
+	if err := role.Validate(); err != nil {
+		t.Errorf("orchestrator role is invalid: %v", err)
+	}
+	// It coordinates; it must not take a mutable checkout of its own.
+	if role.Isolation != IsolationNone {
+		t.Errorf("Isolation = %q, want none", role.Isolation)
+	}
+	if !strings.Contains(role.Instructions, "DISPATCH_TASK_ID") {
+		t.Error("orchestrator should delegate with its own task id as the parent")
+	}
+}

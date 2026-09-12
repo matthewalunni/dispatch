@@ -28,6 +28,7 @@ can nudge a role without restating it.
 ```yaml
 name: engineer                  # required, [a-z0-9_-]; matched by --role
 description: Implementation specialist
+extends: reviewer               # optional; inherit another role, then override
 runtime: claude                 # required; must exist in config.yaml runtimes
 isolation: worktree             # required; none | worktree
 context:
@@ -53,6 +54,34 @@ Run `dispatch roles schema` for the authoritative field list of the installed
 version, and `dispatch roles show <name>` to see a resolved role including any
 project overrides.
 
+## Composition
+
+A role can inherit from another with `extends`, stating only what differs:
+
+```yaml
+# ~/.config/dispatch/roles/security-reviewer.yaml
+name: security-reviewer
+description: Security-focused reviewer
+extends: reviewer
+context:
+  extra_discovery:
+    - authentication, authorization and session handling
+    - anywhere untrusted input crosses a trust boundary
+instructions_append: |
+  Rank findings by exploitability, not by how interesting they are.
+  Say plainly when something is theoretical.
+```
+
+The child wins field by field; anything it omits comes from the parent.
+`instructions_append` adds to the inherited instructions instead of replacing
+them, and `context.extra_discovery` entries merge. Chains are allowed
+(`ios-security-reviewer` → `security-reviewer` → `reviewer`) and cycles are
+rejected with the chain named. `dispatch roles show <name>` prints what a role
+resolved to, including where each part came from.
+
+Composition happens after project overrides, so a role can extend one the
+repository defined or amended.
+
 ## Isolation modes
 
 | mode       | what dispatch prepares                                              |
@@ -76,6 +105,25 @@ dispatch run --role security-reviewer --task "Audit the session token flow"
 Roles are not assumed to be software engineers. `ios-engineer`,
 `ux-researcher`, `behavioral-science-consultant` and `growth-strategist` are all
 just YAML files; only `instructions`, `isolation` and `context` differ.
+
+## What an agent knows about itself
+
+dispatch exports the task's own identity into the agent's environment:
+
+| variable | |
+|---|---|
+| `DISPATCH_TASK_ID` | the task's id |
+| `DISPATCH_TASK_REF` | the readable reference (`dispatch open $DISPATCH_TASK_REF`) |
+| `DISPATCH_PROJECT_ROOT` | the project the task was dispatched from |
+| `DISPATCH_PARENT_TASK_ID` | set when the task has a parent |
+
+A role whose job is to delegate uses these to keep lineage:
+
+```sh
+dispatch run --parent "$DISPATCH_TASK_ID" --role engineer --task "..." --json
+```
+
+The shipped `orchestrator` role does exactly this.
 
 ## Things to keep out of `instructions`
 

@@ -44,8 +44,12 @@ any project-local overrides from .dispatch/roles layered on top.`,
 			tw := newTabWriter(os.Stdout)
 			fmt.Fprintln(tw, styleDim("ROLE\tRUNTIME\tISOLATION\tSOURCE\tDESCRIPTION"))
 			for _, role := range all {
+				origin := role.Origin
+				if len(role.Inherits) > 0 {
+					origin += " ⊃ " + role.Inherits[0]
+				}
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-					role.Name, role.Runtime, role.Isolation, role.Origin, truncate(role.Description, 40))
+					role.Name, role.Runtime, role.Isolation, origin, truncate(role.Description, 40))
 			}
 			tw.Flush()
 			return nil
@@ -92,6 +96,9 @@ func newRolesShowCommand() *cobra.Command {
 			fmt.Fprintf(tw, "%s\t%s\n", styleDim("isolation"), role.Isolation)
 			fmt.Fprintf(tw, "%s\t%s\n", styleDim("source"), role.Source)
 			fmt.Fprintf(tw, "%s\t%s\n", styleDim("origin"), role.Origin)
+			if len(role.Inherits) > 0 {
+				fmt.Fprintf(tw, "%s\t%s\n", styleDim("extends"), strings.Join(role.Inherits, " → "))
+			}
 			fmt.Fprintf(tw, "%s\t%t\n", styleDim("repository context"), role.Context.Repository)
 			fmt.Fprintf(tw, "%s\t%t\n", styleDim("discover docs"), role.Context.DiscoverProjectDocs)
 			fmt.Fprintf(tw, "%s\t%t\n", styleDim("git history"), role.Context.GitHistory)

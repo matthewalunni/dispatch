@@ -128,6 +128,24 @@ The four roles shipped by default:
 | `reviewer` | claude  | `none`     | reviews code without changing it                 |
 | `general`  | claude  | `none`     | research, planning, consultation, specialists    |
 
+Roles compose. `extends` inherits another role and states only what differs:
+
+```yaml
+name: security-reviewer
+description: Security-focused reviewer
+extends: reviewer
+context:
+  extra_discovery:
+    - anywhere untrusted input crosses a trust boundary
+instructions_append: |
+  Rank findings by exploitability, not by how interesting they are.
+```
+
+The child wins field by field, `instructions_append` adds to what it inherited,
+and `extra_discovery` merges. Chains work; cycles are rejected with the chain
+named. Composition runs after project overrides, so a role can extend one the
+repository amended.
+
 Nothing assumes an agent is a software engineer. `ux-researcher`,
 `behavioral-science-consultant`, `growth-strategist` and `accessibility-reviewer`
 are all just YAML files. See `~/.config/dispatch/roles/README.md` for the full
@@ -173,6 +191,7 @@ Resolution runs global defaults → global config → project overrides → task
 | `dispatch run` | dispatch a task non-interactively |
 | `dispatch ls` (`list`) | tasks, with live agent state from herdr |
 | `dispatch open <task>` | back into that task's conversation |
+| `dispatch wait <task>` | block until an agent needs you or finishes |
 | `dispatch show <task>` | everything about a task (`--prompt` for what was sent) |
 | `dispatch stop <task>` | end the agent session |
 | `dispatch done <task>` | mark complete, leaving the session running |
@@ -220,6 +239,60 @@ parent=$(dispatch run --role designer --task "Plan the onboarding flow" --json |
 dispatch run --parent "$parent" --role engineer --task "Build the onboarding screens"
 dispatch ls --parent "$parent"
 ```
+
+## Orchestration
+
+dispatch is an execution primitive, so an agent can drive it the same way you
+do. Three things make that work:
+
+**Every agent knows its own task.** dispatch exports the task's identity into
+the agent's pane, so a delegating agent can dispatch child work that keeps its
+lineage:
+
+| variable | |
+|---|---|
+| `DISPATCH_TASK_ID` | the task's id |
+| `DISPATCH_TASK_REF` | the readable reference |
+| `DISPATCH_PROJECT_ROOT` | the project it was dispatched from |
+| `DISPATCH_PARENT_TASK_ID` | set when the task has a parent |
+
+**Waiting is event-driven, not a poll loop.** `dispatch wait` blocks on herdr's
+event stream and returns the moment an agent needs a human or finishes. Exit
+status is 0 on a match and 2 on timeout, so a script never has to parse output
+to tell them apart.
+
+```sh
+dispatch wait implement-feature-x --until waiting --timeout 20m --json
+```
+
+**An `orchestrator` role ships by default.** It coordinates rather than
+implementing, and delegates with its own task as the parent:
+
+```sh
+dispatch run --role orchestrator --task "Ship the onboarding revamp"
+```
+
+```sh
+# what that agent then runs, from inside its own session
+dispatch roles                                            # what specialists exist here
+dispatch run --parent "$DISPATCH_TASK_ID" --role designer --task "..." --json
+dispatch run --parent "$DISPATCH_TASK_ID" --role engineer --task "..." --json
+dispatch wait <child> --until waiting,done --timeout 20m
+dispatch ls --parent "$DISPATCH_TASK_ID"
+```
+
+If you want a bare `dispatch run --task "..."` (no `--role`) to go to the
+orchestrator and be broken down, set it as your default:
+
+```yaml
+# ~/.config/dispatch/config.yaml
+default_role: orchestrator
+```
+
+That is off by default deliberately: delegation spends real tokens and spawns
+real sessions, so dispatch does not classify work for you unless you ask it to.
+Which role fits a task stays a decision an agent makes explicitly, in its own
+instructions, rather than something dispatch infers.
 
 ## The control centre
 
@@ -273,14 +346,20 @@ what it is doing. `dispatch ls` shows the combination:
 terminal output. When herdr is unreachable, dispatch degrades to its own view
 rather than claiming sessions have died.
 
+Status arrives live. dispatch subscribes to herdr's event stream over its
+socket API, so the control centre reflects a state change as it happens rather
+than on a timer; the header says `● live` or `○ polling` so a quiet screen is
+never ambiguous. A slow poll runs underneath as a safety net, and dispatch
+falls back to it entirely where live events are unavailable.
+
 ## Architecture
 
 ```
 cmd/dispatch          the binary
-internal/core         the application layer — Dispatch(), Open(), Stop(), Doctor()
+internal/core         the application layer — Dispatch(), Open(), Stop(), Watch(), Doctor()
 internal/clix         the CLI (cobra)
 internal/tui          the control centre (Bubble Tea)
-internal/herdrx       the herdr adapter — every herdr call lives here
+internal/herdrx       the herdr adapter — CLI calls, plus the event subscriber
 internal/gitx         the git adapter — every git call lives here
 internal/runtime      agent runtimes, resolved from config
 internal/roles        role definitions, merging and seeding
@@ -315,10 +394,11 @@ make check        # vet + test
 make install      # into $(go env GOPATH)/bin
 ```
 
-Tests cover config layering, role resolution and project overrides, project
-detection, slug and branch and agent naming, database persistence and task
-lookup, prompt construction, worktree path selection, the JSON contract, and the
-herdr and git adapters. Herdr and git are interfaces with in-memory fakes, so
+Tests cover config layering, role resolution, composition and project
+overrides, project detection, slug and branch and agent naming, database
+persistence and task lookup, prompt construction, worktree path selection, the
+JSON contract, the event subscriber and watcher, and the herdr and git
+adapters. The concurrent paths are covered under `go test -race`. Herdr and git are interfaces with in-memory fakes, so
 the whole application layer runs without a terminal, a repository or a server.
 
 ## Requirements

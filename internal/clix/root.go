@@ -57,6 +57,7 @@ Run with no arguments to open the control centre.`,
 		newRunCommand(),
 		newListCommand(),
 		newOpenCommand(),
+		newWaitCommand(),
 		newStopCommand(),
 		newDoneCommand(),
 		newShowCommand(),
@@ -73,18 +74,39 @@ func openApp() (*core.App, error) {
 	return core.New(core.Options{})
 }
 
+// errTimedOut gives `dispatch wait` a distinct exit status so a script can
+// tell "the agent reached the state" from "it did not in time".
+var errTimedOut = &timeoutError{}
+
+type timeoutError struct{}
+
+func (e *timeoutError) Error() string { return "timed out waiting for the task" }
+
 // exitCode maps errors onto conventional process exit codes.
 func exitCode(err error) int {
-	if err == nil {
+	switch {
+	case err == nil:
 		return 0
+	case isTimeout(err):
+		return 2
+	default:
+		return 1
 	}
-	return 1
+}
+
+func isTimeout(err error) bool {
+	_, ok := err.(*timeoutError)
+	return ok
 }
 
 func printError(err error) {
 	// doctor already printed a full report; a second one-line summary on top
 	// of it is noise.
 	if _, ok := err.(*silentError); ok {
+		return
+	}
+	// `wait` already printed its own outcome line.
+	if isTimeout(err) {
 		return
 	}
 	fmt.Fprintln(os.Stderr, "dispatch: "+err.Error())

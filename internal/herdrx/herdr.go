@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Status is one of herdr's agent lifecycle states.
@@ -85,6 +86,8 @@ type CreateTabRequest struct {
 	CWD         string
 	Label       string
 	Focus       bool
+	// Env is set on the launched process, as KEY=VALUE pairs.
+	Env []string
 }
 
 // StartAgentRequest launches an agent runtime inside an existing pane.
@@ -150,6 +153,10 @@ var ErrNotInstalled = errors.New("herdr is not installed or not on PATH")
 type CLI struct {
 	Binary  string
 	Session string
+
+	// socketOnce guards the cached event-socket path.
+	socketOnce   sync.Mutex
+	cachedSocket string
 }
 
 // NewCLI builds a herdr adapter. An empty binary defaults to "herdr".
@@ -317,6 +324,9 @@ func (c *CLI) CreateTab(ctx context.Context, req CreateTabRequest) (Tab, error) 
 	}
 	if req.Label != "" {
 		args = append(args, "--label", req.Label)
+	}
+	for _, entry := range req.Env {
+		args = append(args, "--env", entry)
 	}
 	if req.Focus {
 		args = append(args, "--focus")

@@ -167,6 +167,7 @@ func (a *App) Dispatch(ctx context.Context, req DispatchRequest) (*DispatchResul
 		CWD:         ws.Dir,
 		Label:       tabLabel(role.Name, slug),
 		Focus:       req.Focus || rc.Config.Herdr.FocusOnCreate,
+		Env:         taskEnv(taskID, slug, rc.Project.Root, req.ParentTaskID),
 	})
 	if err != nil {
 		rollback()
@@ -351,6 +352,24 @@ func (a *App) requireHerdr(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// taskEnv is the agent's own identity, exported into its pane.
+//
+// Without this an agent cannot refer to the task it *is*, which is what a
+// delegating role needs in order to dispatch child work that keeps lineage:
+//
+//	dispatch run --parent "$DISPATCH_TASK_ID" --role engineer --task "..."
+func taskEnv(taskID, slug, projectRoot, parentTaskID string) []string {
+	env := []string{
+		"DISPATCH_TASK_ID=" + taskID,
+		"DISPATCH_TASK_REF=" + slug,
+		"DISPATCH_PROJECT_ROOT=" + projectRoot,
+	}
+	if parentTaskID != "" {
+		env = append(env, "DISPATCH_PARENT_TASK_ID="+parentTaskID)
+	}
+	return env
 }
 
 func tabLabel(role, slug string) string {
