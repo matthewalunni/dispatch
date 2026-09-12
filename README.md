@@ -61,6 +61,49 @@ dispatch doctor
 The first run creates everything dispatch needs and never overwrites anything
 you have edited, so it is always safe to run again.
 
+## Updating
+
+```sh
+go install github.com/matthewalunni/dispatch/cmd/dispatch@latest
+
+# or, from a clone
+cd ~/src/dispatch && git pull && make install
+```
+
+`@latest` resolves to the newest commit on `main`, so it works even though this
+repository carries no release tags yet. Pin a specific one by naming it:
+`...@v0.2.0`, or `...@<commit-sha>`.
+
+Note that `dispatch --version` is not yet a reliable way to confirm an upgrade:
+with no tags in the repository both install paths report the built-in `0.1.0`.
+`make install` stamps the version from `git describe`, so it will start
+reporting the real release once tags exist. Until then, check the binary's
+timestamp — and if an upgrade seems not to have taken, `which -a dispatch` will
+show whether an older copy is earlier on your `PATH`.
+
+Upgrading is not disruptive, and it is worth knowing exactly why:
+
+- **Your config and roles are left alone.** Seeding never overwrites a file
+  that exists, so anything you have edited survives. Roles that ship in a newer
+  version and do not exist yet *are* added, since they are new files.
+- **New settings do not need adding by hand.** A key absent from your
+  `config.yaml` takes the new version's default — nothing is written into your
+  file to make that happen.
+- **The database migrates itself** on the next run. Schema changes are applied
+  in order, and existing tasks keep working.
+- **Running agents are untouched.** dispatch has no daemon; the sessions live
+  in herdr. Replacing the binary does not disturb anything mid-flight, so you
+  can upgrade with work in progress.
+
+Afterwards:
+
+```sh
+dispatch doctor
+```
+
+which also reports the herdr server version it is talking to — worth a glance
+if dispatch and herdr were updated at different times.
+
 ## What goes where
 
 Nothing is written into your source repositories or your dotfiles.
