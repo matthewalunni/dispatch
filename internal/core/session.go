@@ -90,13 +90,18 @@ func (a *App) Stop(ctx context.Context, ref string, opts StopOptions) (*StopResu
 	view := a.HydrateOne(ctx, task)
 	result := &StopResult{}
 
-	if view.AgentAlive {
-		if err := a.herdr.StopAgent(ctx, task.SessionRef()); err != nil {
-			if !herdrx.IsCode(err, herdrx.CodeAgentNotFound) {
+	// Tear down whatever dispatch built for this task. When it made a whole
+	// workspace, closing only the pane would leave an empty workspace behind
+	// in the sidebar; when it made a tab in someone else's workspace, closing
+	// that workspace would take their work with it.
+	session := taskSession(task)
+	if view.AgentAlive || session.OwnsWorkspace() {
+		if err := a.herdr.CloseSession(ctx, session); err != nil {
+			if !herdrx.IsCode(err, herdrx.CodeAgentNotFound) && !herdrx.IsCode(err, herdrx.CodePaneNotFound) {
 				return nil, herdrError("Unable to stop the herdr session.", err)
 			}
 		} else {
-			result.AgentStopped = true
+			result.AgentStopped = view.AgentAlive
 		}
 	}
 
@@ -126,6 +131,22 @@ func (a *App) Stop(ctx context.Context, ref string, opts StopOptions) (*StopResu
 
 	result.Task = a.HydrateOne(ctx, task)
 	return result, nil
+}
+
+// taskSession reconstructs the herdr container from what dispatch stored.
+func taskSession(task store.Task) herdrx.Session {
+	layout := herdrx.Layout(task.HerdrLayout)
+	if layout != herdrx.LayoutWorkspace {
+		// Anything not explicitly a workspace — including tasks created
+		// before workspace layout existed — is a tab in a shared workspace.
+		layout = herdrx.LayoutTab
+	}
+	return herdrx.Session{
+		WorkspaceID: task.HerdrWorkspaceID,
+		TabID:       task.HerdrTabID,
+		PaneID:      task.HerdrPaneID,
+		Layout:      layout,
+	}
 }
 
 func stopDetail(r *StopResult) string {

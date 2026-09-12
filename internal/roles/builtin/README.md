@@ -89,6 +89,10 @@ repository defined or amended.
 | `none`     | the agent runs in the detected project root                          |
 | `worktree` | dispatch creates a private git worktree and branch for the task      |
 
+Either way the task gets its own herdr workspace. With `worktree`, that
+workspace *is* the worktree, so herdr shows the repository and branch next to
+the agent.
+
 `worktree` requires a git repository. Roles that never modify code (reviewers,
 researchers, consultants) should use `none` — dispatch will not create a
 worktree for a task that does not need one.

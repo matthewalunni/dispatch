@@ -191,3 +191,70 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+func TestLayoutDefaultsToWorkspace(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each task getting its own herdr workspace is the default; tabs are the
+	// opt-in for people who want everything packed together.
+	if cfg.Herdr.Layout != "workspace" {
+		t.Errorf("Layout = %q, want workspace", cfg.Herdr.Layout)
+	}
+	if cfg.Herdr.TrustRepository {
+		t.Error("git trust must be off unless explicitly enabled")
+	}
+}
+
+func TestLayoutAndTrustAreConfigurable(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	writeFile(t, path, "herdr:\n  layout: tab\n  trust_repository: true\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Herdr.Layout != "tab" || !cfg.Herdr.TrustRepository {
+		t.Errorf("herdr config = %+v", cfg.Herdr)
+	}
+	// Other herdr defaults must survive setting just these.
+	if cfg.Herdr.StartTimeoutMS != 60000 || cfg.Herdr.Binary != "herdr" {
+		t.Errorf("herdr defaults lost: %+v", cfg.Herdr)
+	}
+}
+
+func TestProjectCanChooseItsOwnLayout(t *testing.T) {
+	global := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, global, "herdr:\n  layout: workspace\n  session: work\n")
+	project := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, project, "herdr:\n  layout: tab\n")
+
+	cfg, err := Load(global)
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := cfg.ApplyProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Herdr.Layout != "tab" {
+		t.Errorf("Layout = %q, want the project override", merged.Herdr.Layout)
+	}
+	if merged.Herdr.Session != "work" {
+		t.Errorf("Session = %q, want the global value to survive", merged.Herdr.Session)
+	}
+}
+
+func TestEmptyLayoutNormalizesToWorkspace(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, path, "herdr:\n  binary: herdr\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Herdr.Layout != "workspace" {
+		t.Errorf("Layout = %q", cfg.Herdr.Layout)
+	}
+}

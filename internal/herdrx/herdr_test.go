@@ -249,3 +249,190 @@ func TestStatusHelpers(t *testing.T) {
 		t.Error("only working counts as live")
 	}
 }
+
+func TestCreateSessionWorktreeOpensAWorkspaceAndCleansUpTheBareTab(t *testing.T) {
+	binary, logPath := stubHerdr(t, `case "$*" in
+  *"worktree open"*)
+    echo '{"id":"x","result":{"type":"worktree_opened","already_open":false,"workspace":{"workspace_id":"w6","label":"engineer: fix-login","worktree":{"checkout_path":"/wt/fix-login","repo_root":"/src/proj","repo_name":"proj","is_linked_worktree":true}},"tab":{"tab_id":"w6:t1"},"root_pane":{"pane_id":"w6:p1"},"worktree":{"path":"/wt/fix-login","branch":"dispatch/fix-login","is_linked_worktree":true}}}' ;;
+  *"tab create"*)
+    echo '{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"w6:t2","workspace_id":"w6","label":"engineer: fix-login"},"root_pane":{"pane_id":"w6:p2"}}}' ;;
+  *"tab close"*)
+    echo '{"id":"x","result":{"type":"ok"}}' ;;
+esac`)
+
+	session, err := NewCLI(binary, "").CreateSession(context.Background(), CreateSessionRequest{
+		Layout:   LayoutWorkspace,
+		CWD:      "/wt/fix-login",
+		RepoRoot: "/src/proj",
+		Worktree: true,
+		Label:    "engineer: fix-login",
+		Env:      []string{"DISPATCH_TASK_ID=task_1"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if session.WorkspaceID != "w6" || session.Layout != LayoutWorkspace {
+		t.Errorf("session = %+v", session)
+	}
+	// The agent goes in the tab that carries the environment, not the bare
+	// shell tab herdr opened with the worktree.
+	if session.PaneID != "w6:p2" || session.TabID != "w6:t2" {
+		t.Errorf("session should point at the env-carrying tab: %+v", session)
+	}
+	if session.WorktreeBranch != "dispatch/fix-login" || session.WorktreePath != "/wt/fix-login" {
+		t.Errorf("worktree details lost: %+v", session)
+	}
+	if !session.OwnsWorkspace() {
+		t.Error("dispatch created this workspace and must own it")
+	}
+
+	args := readLog(t, logPath)
+	for _, want := range []string{
+		"worktree open --cwd /src/proj --path /wt/fix-login",
+		"--env DISPATCH_TASK_ID=task_1",
+		"tab close w6:t1", // the bare shell tab must not linger
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("herdr invocations missing %q, got:\n%s", want, args)
+		}
+	}
+	if strings.Contains(args, "--trust-repository") {
+		t.Error("git trust must not be granted unless configured")
+	}
+}
+
+func TestCreateSessionPlainWorkspaceCarriesEnvOnItsRootPane(t *testing.T) {
+	binary, logPath := stubHerdr(t, `echo '{"id":"x","result":{"type":"workspace_created","workspace":{"workspace_id":"w7","label":"reviewer: review-diff"},"tab":{"tab_id":"w7:t1"},"root_pane":{"pane_id":"w7:p1"}}}'`)
+
+	session, err := NewCLI(binary, "").CreateSession(context.Background(), CreateSessionRequest{
+		Layout: LayoutWorkspace,
+		CWD:    "/src/proj",
+		Label:  "reviewer: review-diff",
+		Env:    []string{"DISPATCH_TASK_ID=task_2"},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if session.WorkspaceID != "w7" || session.PaneID != "w7:p1" {
+		t.Errorf("session = %+v", session)
+	}
+
+	args := readLog(t, logPath)
+	if !strings.Contains(args, "workspace create --cwd /src/proj") {
+		t.Errorf("args = %s", args)
+	}
+	if !strings.Contains(args, "--env DISPATCH_TASK_ID=task_2") {
+		t.Errorf("env not set on the workspace root pane: %s", args)
+	}
+	// No worktree to open, so no extra tab is needed.
+	if strings.Contains(args, "tab create") {
+		t.Errorf("a plain workspace should not need a second tab: %s", args)
+	}
+}
+
+func TestCreateSessionTabLayoutUsesTabCreate(t *testing.T) {
+	binary, logPath := stubHerdr(t, `echo '{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"w1:t3","workspace_id":"w1","label":"engineer: x"},"root_pane":{"pane_id":"w1:p3"}}}'`)
+
+	session, err := NewCLI(binary, "").CreateSession(context.Background(), CreateSessionRequest{
+		Layout:      LayoutTab,
+		WorkspaceID: "w1",
+		CWD:         "/wt/x",
+		Label:       "engineer: x",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Layout != LayoutTab || session.OwnsWorkspace() {
+		t.Errorf("a tab lives in someone else's workspace: %+v", session)
+	}
+	args := readLog(t, logPath)
+	if !strings.Contains(args, "tab create --workspace w1") {
+		t.Errorf("args = %s", args)
+	}
+	if strings.Contains(args, "worktree open") || strings.Contains(args, "workspace create") {
+		t.Errorf("tab layout must not create a workspace: %s", args)
+	}
+}
+
+func TestCreateSessionTrustRepositoryIsPassedOnlyWhenAsked(t *testing.T) {
+	binary, logPath := stubHerdr(t, `case "$*" in
+  *"worktree open"*) echo '{"id":"x","result":{"type":"worktree_opened","workspace":{"workspace_id":"w8"},"tab":{"tab_id":"w8:t1"},"root_pane":{"pane_id":"w8:p1"},"worktree":{"path":"/wt/x","branch":"b"}}}' ;;
+  *"tab create"*) echo '{"id":"x","result":{"type":"tab_created","tab":{"tab_id":"w8:t2","workspace_id":"w8"},"root_pane":{"pane_id":"w8:p2"}}}' ;;
+  *) echo '{"id":"x","result":{"type":"ok"}}' ;;
+esac`)
+
+	if _, err := NewCLI(binary, "").CreateSession(context.Background(), CreateSessionRequest{
+		Layout: LayoutWorkspace, CWD: "/wt/x", RepoRoot: "/src/proj",
+		Worktree: true, TrustRepository: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readLog(t, logPath), "--trust-repository") {
+		t.Error("trust_repository was configured but not passed through")
+	}
+}
+
+func TestCreateSessionClosesTheWorkspaceIfItsTabCannotBeMade(t *testing.T) {
+	binary, logPath := stubHerdr(t, `case "$*" in
+  *"worktree open"*) echo '{"id":"x","result":{"type":"worktree_opened","already_open":false,"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"},"worktree":{"path":"/wt/x","branch":"b"}}}' ;;
+  *"tab create"*) echo '{"id":"x","error":{"code":"tab_create_failed","message":"no"}}' >&2; exit 1 ;;
+  *) echo '{"id":"x","result":{"type":"ok"}}' ;;
+esac`)
+
+	_, err := NewCLI(binary, "").CreateSession(context.Background(), CreateSessionRequest{
+		Layout: LayoutWorkspace, CWD: "/wt/x", RepoRoot: "/src/proj", Worktree: true,
+	})
+	if err == nil {
+		t.Fatal("expected the failure to surface")
+	}
+	// A half-built workspace in the sidebar is worse than none.
+	if !strings.Contains(readLog(t, logPath), "workspace close w9") {
+		t.Errorf("the workspace was not cleaned up:\n%s", readLog(t, logPath))
+	}
+}
+
+func TestCreateSessionKeepsAWorkspaceThatWasAlreadyOpen(t *testing.T) {
+	binary, logPath := stubHerdr(t, `case "$*" in
+  *"worktree open"*) echo '{"id":"x","result":{"type":"worktree_opened","already_open":true,"workspace":{"workspace_id":"w9"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"},"worktree":{"path":"/wt/x","branch":"b"}}}' ;;
+  *"tab create"*) echo '{"id":"x","error":{"code":"tab_create_failed","message":"no"}}' >&2; exit 1 ;;
+  *) echo '{"id":"x","result":{"type":"ok"}}' ;;
+esac`)
+
+	if _, err := NewCLI(binary, "").CreateSession(context.Background(), CreateSessionRequest{
+		Layout: LayoutWorkspace, CWD: "/wt/x", RepoRoot: "/src/proj", Worktree: true,
+	}); err == nil {
+		t.Fatal("expected the failure to surface")
+	}
+	// It was open before dispatch asked, so it is not dispatch's to close.
+	if strings.Contains(readLog(t, logPath), "workspace close") {
+		t.Error("dispatch closed a workspace that already existed")
+	}
+}
+
+func TestCloseSessionMatchesWhatWasCreated(t *testing.T) {
+	binary, logPath := stubHerdr(t, `echo '{"id":"x","result":{"type":"ok"}}'`)
+	client := NewCLI(binary, "")
+
+	if err := client.CloseSession(context.Background(), Session{
+		WorkspaceID: "w6", TabID: "w6:t2", PaneID: "w6:p2", Layout: LayoutWorkspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CloseSession(context.Background(), Session{
+		WorkspaceID: "w1", TabID: "w1:t3", PaneID: "w1:p3", Layout: LayoutTab,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	args := readLog(t, logPath)
+	if !strings.Contains(args, "workspace close w6") {
+		t.Errorf("a workspace dispatch owns should be closed whole: %s", args)
+	}
+	if !strings.Contains(args, "tab close w1:t3") {
+		t.Errorf("a tab should close only its tab: %s", args)
+	}
+	if strings.Contains(args, "workspace close w1") {
+		t.Errorf("dispatch must not close a workspace it does not own: %s", args)
+	}
+}

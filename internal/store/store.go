@@ -112,6 +112,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_slug         ON tasks(slug);
 CREATE INDEX IF NOT EXISTS idx_tasks_herdr_agent  ON tasks(herdr_agent);
 `,
 	},
+	{
+		// Tasks created before workspace layout existed live in a tab of a
+		// shared workspace, so the default has to be "tab" for them: closing
+		// their workspace would take the user's other work with it.
+		name: "0002_herdr_layout",
+		stmt: `ALTER TABLE tasks ADD COLUMN herdr_layout TEXT NOT NULL DEFAULT 'tab';`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -141,7 +148,7 @@ func (s *Store) migrate(ctx context.Context) error {
 
 const taskColumns = `id, title, description, slug, project_root, project_name, role, runtime,
     isolation, status, worktree, branch, base_ref, herdr_agent, herdr_workspace_id,
-    herdr_tab_id, herdr_pane_id, herdr_session, parent_task_id, error,
+    herdr_tab_id, herdr_pane_id, herdr_session, herdr_layout, parent_task_id, error,
     created_at, updated_at, completed_at`
 
 // Create inserts a new task.
@@ -154,10 +161,10 @@ func (s *Store) Create(ctx context.Context, t *Task) error {
 	}
 	t.UpdatedAt = t.CreatedAt
 	_, err := s.db.ExecContext(ctx, `INSERT INTO tasks (`+taskColumns+`)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Title, t.Description, t.Slug, t.ProjectRoot, t.ProjectName, t.Role, t.Runtime,
 		string(t.Isolation), string(t.Status), t.Worktree, t.Branch, t.BaseRef,
-		t.HerdrAgent, t.HerdrWorkspaceID, t.HerdrTabID, t.HerdrPaneID, t.HerdrSession,
+		t.HerdrAgent, t.HerdrWorkspaceID, t.HerdrTabID, t.HerdrPaneID, t.HerdrSession, t.HerdrLayout,
 		t.ParentTaskID, t.Error,
 		timeString(t.CreatedAt), timeString(t.UpdatedAt), nullableTime(t.CompletedAt))
 	if err != nil {
@@ -172,12 +179,12 @@ func (s *Store) Update(ctx context.Context, t *Task) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET
         title=?, description=?, slug=?, project_root=?, project_name=?, role=?, runtime=?,
         isolation=?, status=?, worktree=?, branch=?, base_ref=?, herdr_agent=?,
-        herdr_workspace_id=?, herdr_tab_id=?, herdr_pane_id=?, herdr_session=?,
+        herdr_workspace_id=?, herdr_tab_id=?, herdr_pane_id=?, herdr_session=?, herdr_layout=?,
         parent_task_id=?, error=?, updated_at=?, completed_at=?
         WHERE id=?`,
 		t.Title, t.Description, t.Slug, t.ProjectRoot, t.ProjectName, t.Role, t.Runtime,
 		string(t.Isolation), string(t.Status), t.Worktree, t.Branch, t.BaseRef, t.HerdrAgent,
-		t.HerdrWorkspaceID, t.HerdrTabID, t.HerdrPaneID, t.HerdrSession,
+		t.HerdrWorkspaceID, t.HerdrTabID, t.HerdrPaneID, t.HerdrSession, t.HerdrLayout,
 		t.ParentTaskID, t.Error, timeString(t.UpdatedAt), nullableTime(t.CompletedAt), t.ID)
 	if err != nil {
 		return fmt.Errorf("update task: %w", err)
@@ -445,7 +452,7 @@ func scanTask(row scanner) (Task, error) {
 	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.Slug, &t.ProjectRoot, &t.ProjectName,
 		&t.Role, &t.Runtime, &isolation, &status, &t.Worktree, &t.Branch, &t.BaseRef,
 		&t.HerdrAgent, &t.HerdrWorkspaceID, &t.HerdrTabID, &t.HerdrPaneID, &t.HerdrSession,
-		&t.ParentTaskID, &t.Error, &createdAt, &updatedAt, &completedAt)
+		&t.HerdrLayout, &t.ParentTaskID, &t.Error, &createdAt, &updatedAt, &completedAt)
 	if err != nil {
 		return Task{}, err
 	}

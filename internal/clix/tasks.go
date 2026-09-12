@@ -339,6 +339,11 @@ func newShowCommand() *cobra.Command {
 				fmt.Fprintf(tw, "%s\t%s\n", styleDim("worktree"), view.Worktree)
 			}
 			fmt.Fprintf(tw, "%s\t%s\n", styleDim("herdr agent"), view.HerdrAgent)
+			if view.HerdrLayout == "workspace" {
+				fmt.Fprintf(tw, "%s\t%s %s\n", styleDim("herdr workspace"), view.HerdrWorkspaceID, styleDim("(this task's own)"))
+			} else {
+				fmt.Fprintf(tw, "%s\t%s %s\n", styleDim("herdr workspace"), view.HerdrWorkspaceID, styleDim("(shared)"))
+			}
 			fmt.Fprintf(tw, "%s\t%s / %s\n", styleDim("herdr pane"), view.HerdrPaneID, view.HerdrTabID)
 			if view.ParentTaskID != "" {
 				fmt.Fprintf(tw, "%s\t%s\n", styleDim("parent"), view.ParentTaskID)

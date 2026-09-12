@@ -52,6 +52,37 @@ type Agent struct {
 	InteractiveReady bool   `json:"interactive_ready"`
 }
 
+// Layout decides what herdr container dispatch gives a task.
+type Layout string
+
+const (
+	// LayoutWorkspace gives each task its own herdr workspace. For a
+	// worktree-isolated task the workspace *is* the worktree, so herdr shows
+	// the repository and branch alongside the agent.
+	LayoutWorkspace Layout = "workspace"
+	// LayoutTab puts each task in a tab of an existing workspace. Compact,
+	// but the tasks share a workspace and herdr sees no worktree.
+	LayoutTab Layout = "tab"
+)
+
+// Session is the herdr container dispatch created for one task.
+type Session struct {
+	WorkspaceID string
+	TabID       string
+	PaneID      string
+	Label       string
+	Layout      Layout
+
+	// WorktreePath and WorktreeBranch are set when herdr recognised the
+	// workspace as a git worktree.
+	WorktreePath   string
+	WorktreeBranch string
+}
+
+// OwnsWorkspace reports whether dispatch created the workspace and should
+// therefore close it when the task ends.
+func (s Session) OwnsWorkspace() bool { return s.Layout == LayoutWorkspace }
+
 // Tab is a created tab plus its root pane.
 type Tab struct {
 	TabID       string
@@ -90,6 +121,29 @@ type CreateTabRequest struct {
 	Env []string
 }
 
+// CreateSessionRequest asks herdr for the container a task will live in.
+type CreateSessionRequest struct {
+	Layout Layout
+	// CWD is the agent's working directory: the worktree, or the project root.
+	CWD   string
+	Label string
+	Env   []string
+	Focus bool
+
+	// RepoRoot is the main checkout. Set together with Worktree to make the
+	// workspace worktree-aware.
+	RepoRoot string
+	// Worktree reports that CWD is a git worktree of RepoRoot.
+	Worktree bool
+	// TrustRepository grants herdr per-request git trust. herdr documents
+	// this as an explicit user decision, so dispatch only sets it when
+	// configured to.
+	TrustRepository bool
+
+	// WorkspaceID pins LayoutTab to an existing workspace.
+	WorkspaceID string
+}
+
 // StartAgentRequest launches an agent runtime inside an existing pane.
 type StartAgentRequest struct {
 	Name      string
@@ -104,6 +158,8 @@ type StartAgentRequest struct {
 type Client interface {
 	Health(ctx context.Context) Health
 	Workspaces(ctx context.Context) ([]Workspace, error)
+	CreateSession(ctx context.Context, req CreateSessionRequest) (Session, error)
+	CloseSession(ctx context.Context, session Session) error
 	CreateTab(ctx context.Context, req CreateTabRequest) (Tab, error)
 	StartAgent(ctx context.Context, req StartAgentRequest) (Agent, error)
 	PromptAgent(ctx context.Context, target, text string) error
@@ -137,6 +193,9 @@ const (
 	CodeAgentNotReady    = "agent_not_ready"
 	CodeAgentBlocked     = "agent_blocked"
 	CodePaneNotFound     = "pane_not_found"
+	CodeWorktreeNotFound = "worktree_not_found"
+	CodeWorktreeOpen     = "worktree_open_failed"
+	CodeWorktreeBusy     = "worktree_operation_in_progress"
 )
 
 // IsCode reports whether err is a herdr error with the given code.
@@ -360,6 +419,178 @@ func (c *CLI) CreateTab(ctx context.Context, req CreateTabRequest) (Tab, error) 
 		PaneID:      result.RootPane.PaneID,
 		Label:       result.Tab.Label,
 	}, nil
+}
+
+// CreateSession builds the herdr container for a task.
+//
+// In workspace layout a worktree-isolated task gets a workspace herdr knows is
+// a worktree, so its sidebar shows the repository and branch next to the agent.
+// dispatch still owns the worktree itself: git created it, and herdr is only
+// asked to open it.
+func (c *CLI) CreateSession(ctx context.Context, req CreateSessionRequest) (Session, error) {
+	if req.Layout == LayoutTab {
+		tab, err := c.CreateTab(ctx, CreateTabRequest{
+			WorkspaceID: req.WorkspaceID,
+			CWD:         req.CWD,
+			Label:       req.Label,
+			Focus:       req.Focus,
+			Env:         req.Env,
+		})
+		if err != nil {
+			return Session{}, err
+		}
+		return Session{
+			WorkspaceID: tab.WorkspaceID,
+			TabID:       tab.TabID,
+			PaneID:      tab.PaneID,
+			Label:       tab.Label,
+			Layout:      LayoutTab,
+		}, nil
+	}
+
+	if req.Worktree && req.RepoRoot != "" {
+		return c.createWorktreeSession(ctx, req)
+	}
+	return c.createPlainWorkspaceSession(ctx, req)
+}
+
+// createPlainWorkspaceSession is the path for tasks with no worktree: the
+// workspace root pane is the agent's pane, and takes the env directly.
+func (c *CLI) createPlainWorkspaceSession(ctx context.Context, req CreateSessionRequest) (Session, error) {
+	args := []string{"workspace", "create", "--cwd", req.CWD}
+	if req.Label != "" {
+		args = append(args, "--label", req.Label)
+	}
+	for _, entry := range req.Env {
+		args = append(args, "--env", entry)
+	}
+	args = append(args, focusFlag(req.Focus))
+
+	raw, err := c.exec(ctx, args...)
+	if err != nil {
+		return Session{}, err
+	}
+	var result struct {
+		Workspace struct {
+			WorkspaceID string `json:"workspace_id"`
+			Label       string `json:"label"`
+		} `json:"workspace"`
+		Tab      struct{ TabID string } `json:"tab"`
+		RootPane struct {
+			PaneID string `json:"pane_id"`
+		} `json:"root_pane"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return Session{}, fmt.Errorf("parse workspace create: %w", err)
+	}
+	if result.RootPane.PaneID == "" {
+		return Session{}, errors.New("herdr created a workspace but did not return a root pane id")
+	}
+	return Session{
+		WorkspaceID: result.Workspace.WorkspaceID,
+		TabID:       result.Tab.TabID,
+		PaneID:      result.RootPane.PaneID,
+		Label:       result.Workspace.Label,
+		Layout:      LayoutWorkspace,
+	}, nil
+}
+
+// createWorktreeSession opens an existing git worktree as its own workspace.
+//
+// herdr's `worktree open` takes no environment, so the agent gets a tab that
+// does, and the bare shell tab herdr opened alongside it is closed. The task
+// is then exactly one workspace containing exactly one agent.
+func (c *CLI) createWorktreeSession(ctx context.Context, req CreateSessionRequest) (Session, error) {
+	args := []string{"worktree", "open", "--cwd", req.RepoRoot, "--path", req.CWD}
+	if req.Label != "" {
+		args = append(args, "--label", req.Label)
+	}
+	if req.TrustRepository {
+		args = append(args, "--trust-repository")
+	}
+	args = append(args, focusFlag(req.Focus))
+
+	raw, err := c.exec(ctx, args...)
+	if err != nil {
+		return Session{}, err
+	}
+	var opened struct {
+		AlreadyOpen bool `json:"already_open"`
+		Workspace   struct {
+			WorkspaceID string `json:"workspace_id"`
+			Label       string `json:"label"`
+		} `json:"workspace"`
+		Tab struct {
+			TabID string `json:"tab_id"`
+		} `json:"tab"`
+		Worktree struct {
+			Path   string `json:"path"`
+			Branch string `json:"branch"`
+		} `json:"worktree"`
+	}
+	if err := json.Unmarshal(raw, &opened); err != nil {
+		return Session{}, fmt.Errorf("parse worktree open: %w", err)
+	}
+	workspaceID := opened.Workspace.WorkspaceID
+	if workspaceID == "" {
+		return Session{}, errors.New("herdr opened a worktree but did not return a workspace id")
+	}
+
+	session := Session{
+		WorkspaceID:    workspaceID,
+		Label:          opened.Workspace.Label,
+		Layout:         LayoutWorkspace,
+		WorktreePath:   opened.Worktree.Path,
+		WorktreeBranch: opened.Worktree.Branch,
+	}
+
+	tab, err := c.CreateTab(ctx, CreateTabRequest{
+		WorkspaceID: workspaceID,
+		CWD:         req.CWD,
+		Label:       req.Label,
+		Focus:       req.Focus,
+		Env:         req.Env,
+	})
+	if err != nil {
+		// Leave nothing half-built behind, unless the workspace was already
+		// open for someone else's benefit before this call.
+		if !opened.AlreadyOpen {
+			_, _ = c.exec(ctx, "workspace", "close", workspaceID)
+		}
+		return Session{}, err
+	}
+	session.TabID = tab.TabID
+	session.PaneID = tab.PaneID
+
+	// Drop herdr's bare shell tab so the workspace holds only the agent.
+	if opened.Tab.TabID != "" && opened.Tab.TabID != tab.TabID {
+		_, _ = c.exec(ctx, "tab", "close", opened.Tab.TabID)
+	}
+	return session, nil
+}
+
+// CloseSession removes whatever dispatch created for a task: the whole
+// workspace when it made one, otherwise just the tab.
+func (c *CLI) CloseSession(ctx context.Context, session Session) error {
+	if session.OwnsWorkspace() && session.WorkspaceID != "" {
+		_, err := c.exec(ctx, "workspace", "close", session.WorkspaceID)
+		return err
+	}
+	if session.TabID != "" {
+		return c.CloseTab(ctx, session.TabID)
+	}
+	if session.PaneID != "" {
+		_, err := c.exec(ctx, "pane", "close", session.PaneID)
+		return err
+	}
+	return nil
+}
+
+func focusFlag(focus bool) string {
+	if focus {
+		return "--focus"
+	}
+	return "--no-focus"
 }
 
 func (c *CLI) StartAgent(ctx context.Context, req StartAgentRequest) (Agent, error) {
