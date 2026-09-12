@@ -282,6 +282,7 @@ func (m *model) viewDetail() string {
 	row("Branch", view.Branch)
 	row("Worktree", view.Worktree)
 	row("Agent", view.HerdrAgent)
+	row("Workspace", view.HerdrWorkspaceID)
 	row("Pane", view.HerdrPaneID)
 	row("Parent", view.ParentTaskID)
 	row("Age", view.Age(time.Now().UTC()))

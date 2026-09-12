@@ -59,6 +59,7 @@ type taskJSON struct {
 	HerdrTabID       string `json:"herdr_tab_id,omitempty"`
 	HerdrWorkspaceID string `json:"herdr_workspace_id,omitempty"`
 	HerdrSession     string `json:"herdr_session,omitempty"`
+	HerdrLayout      string `json:"herdr_layout,omitempty"`
 
 	ParentTaskID string `json:"parent_task_id,omitempty"`
 	PromptPath   string `json:"prompt_path,omitempty"`
@@ -93,6 +94,7 @@ func toJSON(view core.TaskView, dataDir string) taskJSON {
 		HerdrTabID:       view.HerdrTabID,
 		HerdrWorkspaceID: view.HerdrWorkspaceID,
 		HerdrSession:     view.HerdrSession,
+		HerdrLayout:      view.HerdrLayout,
 		ParentTaskID:     view.ParentTaskID,
 		Error:            view.Task.Error,
 		CreatedAt:        view.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),

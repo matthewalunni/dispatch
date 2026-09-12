@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/matthewalunni/dispatch/internal/gitx"
@@ -157,9 +158,11 @@ type Herdr struct {
 	// CreateTabErr, when set, fails every CreateTab call.
 	CreateTabErr error
 
-	agents     map[string]herdrx.Agent
-	tabCounter int
-	workspaces []herdrx.Workspace
+	agents           map[string]herdrx.Agent
+	tabCounter       int
+	workspaceCounter int
+	openWorkspaces   map[string]bool
+	workspaces       []herdrx.Workspace
 
 	// Prompts records every assignment dispatch submitted.
 	Prompts []Prompt
@@ -171,8 +174,15 @@ type Herdr struct {
 	StoppedAgents []string
 	// StartedArgs records the extra argv passed to each launch.
 	StartedArgs map[string][]string
-	// TabEnv records the environment dispatch set on each created tab.
+	// TabEnv records the environment dispatch set on each created session.
 	TabEnv [][]string
+	// Sessions records every session dispatch asked herdr to build.
+	Sessions []herdrx.CreateSessionRequest
+	// ClosedSessions records every session dispatch tore down.
+	ClosedSessions []herdrx.Session
+	// ClosedWorkspaces records workspaces closed, so a test can tell a
+	// workspace teardown from a tab teardown.
+	ClosedWorkspaces []string
 	// WatchedPanes records the pane set each Watch call subscribed to.
 	WatchedPanes [][]string
 	// EventsUnsupported makes Watch refuse, exercising the polling fallback.
@@ -194,9 +204,10 @@ func NewHerdr() *Herdr {
 			Installed: true, ServerRunning: true, Compatible: true,
 			ClientVersion: "0.9.0", ServerVersion: "0.9.0",
 		},
-		agents:      map[string]herdrx.Agent{},
-		workspaces:  []herdrx.Workspace{{WorkspaceID: "w1", Label: "default", Focused: true}},
-		StartedArgs: map[string][]string{},
+		agents:         map[string]herdrx.Agent{},
+		openWorkspaces: map[string]bool{},
+		workspaces:     []herdrx.Workspace{{WorkspaceID: "w1", Label: "default", Focused: true}},
+		StartedArgs:    map[string][]string{},
 	}
 }
 
@@ -222,15 +233,87 @@ func (h *Herdr) CreateTab(_ context.Context, req herdrx.CreateTabRequest) (herdr
 	}, nil
 }
 
+// CreateSession mirrors the real adapter: a workspace per task, or a tab in a
+// shared one.
+func (h *Herdr) CreateSession(ctx context.Context, req herdrx.CreateSessionRequest) (herdrx.Session, error) {
+	if h.CreateTabErr != nil {
+		return herdrx.Session{}, h.CreateTabErr
+	}
+	h.mu.Lock()
+	h.Sessions = append(h.Sessions, req)
+	h.mu.Unlock()
+
+	if req.Layout == herdrx.LayoutTab {
+		tab, err := h.CreateTab(ctx, herdrx.CreateTabRequest{
+			WorkspaceID: req.WorkspaceID, CWD: req.CWD, Label: req.Label,
+			Focus: req.Focus, Env: req.Env,
+		})
+		if err != nil {
+			return herdrx.Session{}, err
+		}
+		return herdrx.Session{
+			WorkspaceID: tab.WorkspaceID, TabID: tab.TabID, PaneID: tab.PaneID,
+			Label: tab.Label, Layout: herdrx.LayoutTab,
+		}, nil
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.workspaceCounter++
+	h.TabEnv = append(h.TabEnv, append([]string(nil), req.Env...))
+	workspace := fmt.Sprintf("w%d", h.workspaceCounter+1)
+	session := herdrx.Session{
+		WorkspaceID: workspace,
+		TabID:       fmt.Sprintf("%s:t1", workspace),
+		PaneID:      fmt.Sprintf("%s:p1", workspace),
+		Label:       req.Label,
+		Layout:      herdrx.LayoutWorkspace,
+	}
+	if req.Worktree {
+		session.WorktreePath = req.CWD
+	}
+	h.openWorkspaces[workspace] = true
+	return session, nil
+}
+
+// CloseSession removes the workspace dispatch created, or just its tab.
+func (h *Herdr) CloseSession(_ context.Context, session herdrx.Session) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ClosedSessions = append(h.ClosedSessions, session)
+	if session.OwnsWorkspace() {
+		h.ClosedWorkspaces = append(h.ClosedWorkspaces, session.WorkspaceID)
+		delete(h.openWorkspaces, session.WorkspaceID)
+	} else if session.TabID != "" {
+		h.ClosedTabs = append(h.ClosedTabs, session.TabID)
+	}
+	// The agent in that container goes with it.
+	for name, agent := range h.agents {
+		if agent.PaneID == session.PaneID {
+			delete(h.agents, name)
+			h.StoppedAgents = append(h.StoppedAgents, name)
+		}
+	}
+	return nil
+}
+
+// OpenWorkspaceCount reports workspaces the fake still has open.
+func (h *Herdr) OpenWorkspaceCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.openWorkspaces)
+}
+
 func (h *Herdr) StartAgent(_ context.Context, req herdrx.StartAgentRequest) (herdrx.Agent, error) {
 	if h.StartErr != nil {
 		return herdrx.Agent{}, h.StartErr
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	workspace, _, _ := strings.Cut(req.PaneID, ":")
 	agent := herdrx.Agent{
 		Name: req.Name, Kind: req.Kind, PaneID: req.PaneID,
-		TabID: "w1:t1", WorkspaceID: "w1", TerminalID: "term_" + req.Name,
+		TabID: workspace + ":t1", WorkspaceID: workspace, TerminalID: "term_" + req.Name,
 		Status: herdrx.StatusIdle, InteractiveReady: true,
 	}
 	h.agents[req.Name] = agent

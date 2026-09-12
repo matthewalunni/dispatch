@@ -333,3 +333,58 @@ func TestStatusTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestHerdrLayoutRoundTrips(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	seedTask(t, s, "task_1", "fix-login", func(task *Task) {
+		task.HerdrLayout = "workspace"
+		task.HerdrWorkspaceID = "w6"
+	})
+
+	got, err := s.Get(ctx, "task_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HerdrLayout != "workspace" || got.HerdrWorkspaceID != "w6" {
+		t.Errorf("layout not round-tripped: %+v", got)
+	}
+}
+
+func TestLayoutMigrationDefaultsExistingRowsToTab(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dispatch.db")
+
+	// Build a database at the pre-layout schema, then let Open migrate it.
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.db.Exec(`DELETE FROM schema_migrations WHERE name = '0002_herdr_layout'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.db.Exec(`ALTER TABLE tasks DROP COLUMN herdr_layout`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.db.Exec(`INSERT INTO tasks (id, title, slug, status, created_at, updated_at)
+        VALUES ('task_old', 'Old task', 'old-task', 'running', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("migration failed on an existing database: %v", err)
+	}
+	defer second.Close()
+
+	got, err := second.Get(context.Background(), "task_old")
+	if err != nil {
+		t.Fatalf("existing row lost: %v", err)
+	}
+	// A task created before workspaces existed lives in a shared workspace;
+	// defaulting it to "workspace" would make stopping it close the user's
+	// other work.
+	if got.HerdrLayout != "tab" {
+		t.Errorf("HerdrLayout = %q, want tab for a pre-existing row", got.HerdrLayout)
+	}
+}

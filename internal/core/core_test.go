@@ -75,6 +75,29 @@ func newHarness(t *testing.T) *harness {
 	return &harness{App: app, Git: git, Herdr: herdr, Repo: repo, DataDir: dataDir, ConfigPath: configFile}
 }
 
+// reopen rebuilds the App so an edited config file takes effect, keeping the
+// same fakes and directories.
+func reopen(t *testing.T, h *harness) *harness {
+	t.Helper()
+	if err := h.App.Close(); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(Options{
+		ConfigFile: h.ConfigPath,
+		RolesDir:   h.RolesDir(),
+		DBPath:     filepath.Join(h.DataDir, "dispatch.db"),
+		DataDir:    h.DataDir,
+		Git:        h.Git,
+		Herdr:      h.Herdr,
+		SkipSeed:   true,
+	})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { app.Close() })
+	return &harness{App: app, Git: h.Git, Herdr: h.Herdr, Repo: h.Repo, DataDir: h.DataDir, ConfigPath: h.ConfigPath}
+}
+
 func (h *harness) dispatch(t *testing.T, req DispatchRequest) *DispatchResult {
 	t.Helper()
 	if req.Dir == "" {
@@ -333,8 +356,11 @@ func TestDispatchRollsBackTheWorktreeWhenTheAgentFailsToStart(t *testing.T) {
 	if len(h.Git.Removed) != 1 {
 		t.Errorf("worktree not cleaned up: removed = %v", h.Git.Removed)
 	}
-	if len(h.Herdr.ClosedTabs) != 1 {
-		t.Errorf("herdr tab not cleaned up: closed = %v", h.Herdr.ClosedTabs)
+	if len(h.Herdr.ClosedSessions) != 1 {
+		t.Errorf("herdr session not cleaned up: closed = %v", h.Herdr.ClosedSessions)
+	}
+	if h.Herdr.OpenWorkspaceCount() != 0 {
+		t.Errorf("a failed dispatch left %d workspaces open", h.Herdr.OpenWorkspaceCount())
 	}
 	tasks, err := h.Store().All(context.Background())
 	if err != nil {
@@ -847,5 +873,182 @@ func TestSeedCreatesConfigAndRolesOnFirstRun(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(configDir, "roles", name)); err != nil {
 			t.Errorf("%s not seeded: %v", name, err)
 		}
+	}
+}
+
+func TestDispatchGivesEachTaskItsOwnWorkspace(t *testing.T) {
+	h := newHarness(t)
+
+	first := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "First task"})
+	second := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Second task"})
+
+	if first.Task.HerdrWorkspaceID == second.Task.HerdrWorkspaceID {
+		t.Errorf("both tasks landed in workspace %q; each should get its own", first.Task.HerdrWorkspaceID)
+	}
+	for _, task := range []store.Task{first.Task, second.Task} {
+		if task.HerdrLayout != string(herdrx.LayoutWorkspace) {
+			t.Errorf("%s layout = %q, want workspace", task.Slug, task.HerdrLayout)
+		}
+		if task.HerdrWorkspaceID == "" {
+			t.Errorf("%s has no workspace id", task.Slug)
+		}
+	}
+}
+
+func TestWorktreeTaskOpensItsWorktreeAsTheWorkspace(t *testing.T) {
+	h := newHarness(t)
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+
+	if len(h.Herdr.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(h.Herdr.Sessions))
+	}
+	session := h.Herdr.Sessions[0]
+
+	// The workspace must BE the worktree: rooted there, and flagged so herdr
+	// shows the repository and branch beside the agent.
+	if !session.Worktree {
+		t.Error("session was not marked as a worktree workspace")
+	}
+	if session.CWD != result.Task.Worktree {
+		t.Errorf("session CWD = %q, want the worktree %q", session.CWD, result.Task.Worktree)
+	}
+	if session.RepoRoot != result.Task.ProjectRoot {
+		t.Errorf("session RepoRoot = %q, want %q", session.RepoRoot, result.Task.ProjectRoot)
+	}
+	if session.Layout != herdrx.LayoutWorkspace {
+		t.Errorf("layout = %q", session.Layout)
+	}
+	// The label should say what the workspace is, at a glance in the sidebar.
+	if !strings.Contains(session.Label, "engineer") || !strings.Contains(session.Label, result.Task.Slug) {
+		t.Errorf("label = %q, want the role and task", session.Label)
+	}
+}
+
+func TestNonIsolatedTaskGetsAPlainWorkspace(t *testing.T) {
+	h := newHarness(t)
+	h.dispatch(t, DispatchRequest{Role: "reviewer", Title: "Review the diff"})
+
+	session := h.Herdr.Sessions[0]
+	if session.Worktree {
+		t.Error("a task with no worktree must not ask herdr to open one")
+	}
+	if session.Layout != herdrx.LayoutWorkspace {
+		t.Errorf("layout = %q, want its own workspace anyway", session.Layout)
+	}
+	if session.CWD != h.Repo {
+		t.Errorf("CWD = %q, want the project root", session.CWD)
+	}
+}
+
+func TestTabLayoutIsStillAvailable(t *testing.T) {
+	h := newHarness(t)
+	if err := os.WriteFile(h.ConfigPath, []byte(
+		"default_role: general\nworktrees_dir: "+filepath.Join(h.DataDir, "worktrees")+
+			"\nherdr:\n  layout: tab\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Reopen so the new config is loaded.
+	h2 := reopen(t, h)
+
+	result := h2.dispatch(t, DispatchRequest{Role: "engineer", Title: "Packed into a tab"})
+	if result.Task.HerdrLayout != string(herdrx.LayoutTab) {
+		t.Errorf("layout = %q, want tab", result.Task.HerdrLayout)
+	}
+	if h2.Herdr.Sessions[0].Layout != herdrx.LayoutTab {
+		t.Errorf("session layout = %q", h2.Herdr.Sessions[0].Layout)
+	}
+	// Tab layout shares an existing workspace rather than making one.
+	if h2.Herdr.Sessions[0].WorkspaceID != "w1" {
+		t.Errorf("WorkspaceID = %q, want the focused workspace", h2.Herdr.Sessions[0].WorkspaceID)
+	}
+}
+
+func TestStopClosesTheWorkspaceItCreated(t *testing.T) {
+	h := newHarness(t)
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	if h.Herdr.OpenWorkspaceCount() != 1 {
+		t.Fatalf("open workspaces = %d, want 1", h.Herdr.OpenWorkspaceCount())
+	}
+
+	if _, err := h.Stop(context.Background(), result.Task.ID, StopOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An empty workspace left in the sidebar is exactly the clutter that
+	// giving each task its own workspace is supposed to avoid.
+	if h.Herdr.OpenWorkspaceCount() != 0 {
+		t.Errorf("stopping left %d workspaces open", h.Herdr.OpenWorkspaceCount())
+	}
+	if len(h.Herdr.ClosedWorkspaces) != 1 {
+		t.Errorf("closed workspaces = %v, want the task's own", h.Herdr.ClosedWorkspaces)
+	}
+}
+
+func TestStopOfATabTaskClosesOnlyItsTab(t *testing.T) {
+	h := newHarness(t)
+	// A task recorded before workspace layout existed, or dispatched under
+	// layout: tab, lives in a workspace dispatch does not own. Closing that
+	// workspace would take the user's other work with it.
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	task, err := h.Store().Get(context.Background(), result.Task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.HerdrLayout = string(herdrx.LayoutTab)
+	if err := h.Store().Update(context.Background(), &task); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.Stop(context.Background(), task.ID, StopOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Herdr.ClosedWorkspaces) != 0 {
+		t.Errorf("a tab task must not close its workspace: %v", h.Herdr.ClosedWorkspaces)
+	}
+	if len(h.Herdr.ClosedTabs) != 1 {
+		t.Errorf("closed tabs = %v, want the task's tab", h.Herdr.ClosedTabs)
+	}
+}
+
+func TestLegacyTasksWithNoLayoutAreTreatedAsTabs(t *testing.T) {
+	h := newHarness(t)
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	task, _ := h.Store().Get(context.Background(), result.Task.ID)
+	task.HerdrLayout = "" // a row written before the column existed
+	if err := h.Store().Update(context.Background(), &task); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := h.Stop(context.Background(), task.ID, StopOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Herdr.ClosedWorkspaces) != 0 {
+		t.Errorf("a task with unknown layout must not close a workspace: %v", h.Herdr.ClosedWorkspaces)
+	}
+}
+
+func TestOrchestratorChildrenEachGetTheirOwnWorkspace(t *testing.T) {
+	h := newHarness(t)
+	boss := h.dispatch(t, DispatchRequest{Role: "orchestrator", Title: "Ship the revamp"})
+
+	workspaces := map[string]bool{boss.Task.HerdrWorkspaceID: true}
+	for _, spec := range []struct{ role, title string }{
+		{"designer", "Design the screen"},
+		{"engineer", "Implement the screen"},
+		{"reviewer", "Review the changes"},
+	} {
+		child := h.dispatch(t, DispatchRequest{
+			Role: spec.role, Title: spec.title, ParentTaskID: boss.Task.ID,
+		})
+		if workspaces[child.Task.HerdrWorkspaceID] {
+			t.Errorf("%s reused workspace %q", spec.role, child.Task.HerdrWorkspaceID)
+		}
+		workspaces[child.Task.HerdrWorkspaceID] = true
+	}
+	if len(workspaces) != 4 {
+		t.Errorf("workspaces = %d, want one per agent", len(workspaces))
+	}
+	if h.Herdr.OpenWorkspaceCount() != 4 {
+		t.Errorf("open workspaces = %d, want one per agent", h.Herdr.OpenWorkspaceCount())
 	}
 }

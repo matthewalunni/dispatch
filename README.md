@@ -151,6 +151,36 @@ Nothing assumes an agent is a software engineer. `ux-researcher`,
 are all just YAML files. See `~/.config/dispatch/roles/README.md` for the full
 format.
 
+## What a task looks like in herdr
+
+Each dispatched agent gets **its own herdr workspace**, not a pane in a shared
+one. For a worktree-isolated task the workspace *is* the worktree, so herdr
+shows the repository and branch beside the agent:
+
+```
+w9   orchestrator: ship-the-onboarding-revamp     —
+wA   designer: design-the-new-first-run-screen    —
+wB   engineer: implement-the-new-first-run-screen worktree of repvault
+wC   reviewer: review-the-first-run-changes       —
+```
+
+dispatch still owns the worktree: git creates it, and herdr is only asked to
+open it. Stopping a task closes the workspace dispatch made and leaves the
+worktree on disk unless you pass `--remove-worktree`.
+
+Two things worth knowing:
+
+- The first worktree dispatch opens in a repository makes herdr create a
+  **primary workspace** for that repository's main checkout — herdr groups
+  worktree workspaces under one. It is one per repository, not per task, and
+  dispatch never closes it, since it may be yours.
+- If a repository's ownership makes git refuse (`dubious ownership`), herdr
+  needs explicit trust. dispatch will not grant that for you; verify the
+  repository, then set `herdr.trust_repository: true`.
+
+Prefer everything packed into one workspace? Set `herdr.layout: tab` and tasks
+become tabs of the focused workspace, as before.
+
 ## Per-repository configuration (optional)
 
 A repository can commit a `.dispatch/` directory. Every project works without
@@ -376,7 +406,8 @@ The boundaries are deliberate:
 
 - **dispatch** owns tasks, roles, workspace preparation, prompt construction and
   orchestration metadata.
-- **herdr** owns terminal sessions, panes and the live agent processes.
+- **herdr** owns workspaces, terminal sessions, panes and the live agent
+  processes.
 - **git** owns branches, worktrees and repository state.
 - **the repository** owns product knowledge, conventions and its own agent
   instructions.

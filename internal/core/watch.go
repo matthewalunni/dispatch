@@ -328,20 +328,31 @@ func (a *App) WaitFor(ctx context.Context, ref string, opts WaitOptions) (*WaitR
 		return &WaitResult{Task: a.HydrateOne(final, current), Matched: matched, Live: live}
 	}
 
+	// Cancelling the wait closes the change channel and fires ctx.Done at the
+	// same time, so both have to produce the same verdict: whichever the
+	// select happens to pick, a deadline is still a timeout.
+	outcome := func(live bool) (*WaitResult, error) {
+		result := finish(false, live)
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			result.TimedOut = true
+			return result, nil
+		case ctx.Err() != nil:
+			return result, ctx.Err()
+		default:
+			return result, nil
+		}
+	}
+
 	live := false
 	for {
 		select {
 		case <-ctx.Done():
-			result := finish(false, live)
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				result.TimedOut = true
-				return result, nil
-			}
-			return result, ctx.Err()
+			return outcome(live)
 
 		case change, ok := <-changes:
 			if !ok {
-				return finish(false, live), nil
+				return outcome(live)
 			}
 			live = live || change.Live
 			if ctx.Err() != nil {

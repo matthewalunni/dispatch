@@ -37,10 +37,18 @@ type RuntimeConfig struct {
 // HerdrConfig describes how to reach the herdr runtime.
 type HerdrConfig struct {
 	Binary string `yaml:"binary" json:"binary"`
+	// Layout decides what container each task gets: "workspace" gives every
+	// task its own herdr workspace (and makes a worktree-isolated task's
+	// workspace the worktree), "tab" packs tasks into one workspace.
+	Layout string `yaml:"layout" json:"layout"`
+	// TrustRepository grants herdr per-request git trust when opening a
+	// worktree. herdr treats this as an explicit user decision, so it is off
+	// unless you turn it on for a repository you have verified.
+	TrustRepository bool `yaml:"trust_repository" json:"trust_repository"`
 	// Session selects a named herdr session (`herdr --session <name>`).
 	Session string `yaml:"session" json:"session,omitempty"`
 	// Workspace pins dispatch tabs to one workspace id (e.g. "w1"). Empty
-	// means "use the focused workspace".
+	// means "use the focused workspace". Only applies to layout: tab.
 	Workspace string `yaml:"workspace" json:"workspace,omitempty"`
 	// StartTimeoutMS is how long herdr waits for the agent to become
 	// interactive before reporting agent_not_ready.
@@ -75,6 +83,7 @@ func Defaults() Config {
 		BranchPrefix:   "dispatch/",
 		Herdr: HerdrConfig{
 			Binary:         "herdr",
+			Layout:         "workspace",
 			StartTimeoutMS: 60000,
 			FocusOnCreate:  false,
 		},
@@ -105,8 +114,13 @@ branch_prefix: dispatch/
 
 herdr:
   binary: herdr
+  # Each task gets its own herdr workspace, and a worktree-isolated task's
+  # workspace is the worktree itself. Set to "tab" to pack tasks into tabs of
+  # a single workspace instead.
+  layout: workspace
   # session: work          # use a named herdr session
-  # workspace: w1          # pin dispatch tabs to one workspace
+  # workspace: w1          # layout: tab only — pin dispatch tabs here
+  # trust_repository: true # grant herdr git trust for this repo (verify first)
   start_timeout_ms: 60000
   focus_on_create: false
 
@@ -223,6 +237,9 @@ func (c *Config) normalize() {
 	if c.Herdr.StartTimeoutMS <= 0 {
 		c.Herdr.StartTimeoutMS = 60000
 	}
+	if c.Herdr.Layout == "" {
+		c.Herdr.Layout = "workspace"
+	}
 	if c.DefaultRole == "" {
 		c.DefaultRole = "general"
 	}
@@ -246,11 +263,13 @@ type fileLayer struct {
 }
 
 type herdrLayer struct {
-	Binary         *string `yaml:"binary"`
-	Session        *string `yaml:"session"`
-	Workspace      *string `yaml:"workspace"`
-	StartTimeoutMS *int    `yaml:"start_timeout_ms"`
-	FocusOnCreate  *bool   `yaml:"focus_on_create"`
+	Binary          *string `yaml:"binary"`
+	Layout          *string `yaml:"layout"`
+	TrustRepository *bool   `yaml:"trust_repository"`
+	Session         *string `yaml:"session"`
+	Workspace       *string `yaml:"workspace"`
+	StartTimeoutMS  *int    `yaml:"start_timeout_ms"`
+	FocusOnCreate   *bool   `yaml:"focus_on_create"`
 }
 
 func readFile(path string) (fileLayer, bool, error) {
@@ -291,6 +310,12 @@ func merge(base Config, layer fileLayer) Config {
 	if layer.Herdr != nil {
 		if layer.Herdr.Binary != nil {
 			out.Herdr.Binary = *layer.Herdr.Binary
+		}
+		if layer.Herdr.Layout != nil {
+			out.Herdr.Layout = *layer.Herdr.Layout
+		}
+		if layer.Herdr.TrustRepository != nil {
+			out.Herdr.TrustRepository = *layer.Herdr.TrustRepository
 		}
 		if layer.Herdr.Session != nil {
 			out.Herdr.Session = *layer.Herdr.Session

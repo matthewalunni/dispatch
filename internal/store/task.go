@@ -58,6 +58,9 @@ type Task struct {
 	HerdrTabID       string `json:"herdr_tab_id,omitempty"`
 	HerdrPaneID      string `json:"herdr_pane_id,omitempty"`
 	HerdrSession     string `json:"herdr_session,omitempty"`
+	// HerdrLayout records whether dispatch created a whole workspace for this
+	// task or only a tab, which decides what stopping it should tear down.
+	HerdrLayout string `json:"herdr_layout,omitempty"`
 
 	ParentTaskID string `json:"parent_task_id,omitempty"`
 

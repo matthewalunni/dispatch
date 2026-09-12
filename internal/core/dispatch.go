@@ -156,33 +156,47 @@ func (a *App) Dispatch(ctx context.Context, req DispatchRequest) (*DispatchResul
 		return nil, err
 	}
 
-	workspaceID, err := a.targetWorkspace(ctx, rc)
-	if err != nil {
-		rollback()
-		return nil, err
+	layout := herdrx.Layout(rc.Config.Herdr.Layout)
+	if layout != herdrx.LayoutTab {
+		layout = herdrx.LayoutWorkspace
 	}
 
-	tab, err := a.herdr.CreateTab(ctx, herdrx.CreateTabRequest{
-		WorkspaceID: workspaceID,
-		CWD:         ws.Dir,
-		Label:       tabLabel(role.Name, slug),
-		Focus:       req.Focus || rc.Config.Herdr.FocusOnCreate,
-		Env:         taskEnv(taskID, slug, rc.Project.Root, req.ParentTaskID),
+	// Only tab layout has to choose an existing workspace; workspace layout
+	// makes its own.
+	var workspaceID string
+	if layout == herdrx.LayoutTab {
+		workspaceID, err = a.targetWorkspace(ctx, rc)
+		if err != nil {
+			rollback()
+			return nil, err
+		}
+	}
+
+	session, err := a.herdr.CreateSession(ctx, herdrx.CreateSessionRequest{
+		Layout:          layout,
+		CWD:             ws.Dir,
+		Label:           sessionLabel(role.Name, slug),
+		Env:             taskEnv(taskID, slug, rc.Project.Root, req.ParentTaskID),
+		Focus:           req.Focus || rc.Config.Herdr.FocusOnCreate,
+		RepoRoot:        rc.Project.Root,
+		Worktree:        ws.Worktree != "",
+		TrustRepository: rc.Config.Herdr.TrustRepository,
+		WorkspaceID:     workspaceID,
 	})
 	if err != nil {
 		rollback()
-		return nil, herdrError("Unable to create a herdr tab for this task.", err)
+		return nil, sessionError(err, layout, rc.Project.Root)
 	}
 
 	agent, err := a.herdr.StartAgent(ctx, herdrx.StartAgentRequest{
 		Name:      agentName,
 		Kind:      rt.AgentKind(),
-		PaneID:    tab.PaneID,
+		PaneID:    session.PaneID,
 		TimeoutMS: rc.Config.Herdr.StartTimeoutMS,
 		Args:      rt.Args(runtime.LaunchSpec{WorkingDir: ws.Dir, RoleArgs: role.RuntimeArgs}),
 	})
 	if err != nil {
-		if closeErr := a.herdr.CloseTab(ctx, tab.TabID); closeErr != nil {
+		if closeErr := a.herdr.CloseSession(ctx, session); closeErr != nil {
 			_ = closeErr // best effort; the real error is the launch failure
 		}
 		rollback()
@@ -217,10 +231,11 @@ func (a *App) Dispatch(ctx context.Context, req DispatchRequest) (*DispatchResul
 		Branch:           ws.Branch,
 		BaseRef:          ws.BaseRef,
 		HerdrAgent:       agentName,
-		HerdrWorkspaceID: firstNonEmpty(agent.WorkspaceID, tab.WorkspaceID),
-		HerdrTabID:       firstNonEmpty(agent.TabID, tab.TabID),
-		HerdrPaneID:      firstNonEmpty(agent.PaneID, tab.PaneID),
+		HerdrWorkspaceID: firstNonEmpty(agent.WorkspaceID, session.WorkspaceID),
+		HerdrTabID:       firstNonEmpty(agent.TabID, session.TabID),
+		HerdrPaneID:      firstNonEmpty(agent.PaneID, session.PaneID),
 		HerdrSession:     rc.Config.Herdr.Session,
+		HerdrLayout:      string(session.Layout),
 		ParentTaskID:     req.ParentTaskID,
 		CreatedAt:        now,
 	}
@@ -372,12 +387,42 @@ func taskEnv(taskID, slug, projectRoot, parentTaskID string) []string {
 	return env
 }
 
-func tabLabel(role, slug string) string {
+// sessionLabel is what the workspace or tab is called in herdr's sidebar.
+func sessionLabel(role, slug string) string {
 	label := role + ": " + slug
 	if len(label) > 48 {
 		label = label[:48]
 	}
 	return label
+}
+
+// sessionError explains a failure to build the task's herdr container.
+func sessionError(err error, layout herdrx.Layout, repoRoot string) error {
+	switch {
+	case herdrx.IsCode(err, herdrx.CodeWorktreeBusy):
+		return &UserError{
+			Summary: "herdr is already working on a worktree for this repository.",
+			Reason:  err.Error(),
+			Hints:   []string{"wait for that operation to finish, then retry"},
+			Err:     err,
+		}
+	case herdrx.IsCode(err, herdrx.CodeWorktreeOpen), herdrx.IsCode(err, herdrx.CodeWorktreeNotFound):
+		hints := []string{"herdr worktree list", "dispatch doctor"}
+		if strings.Contains(strings.ToLower(err.Error()), "dubious ownership") ||
+			strings.Contains(strings.ToLower(err.Error()), "safe.directory") {
+			hints = []string{
+				fmt.Sprintf("git config --global --add safe.directory %s", repoRoot),
+				"or set herdr.trust_repository: true in your dispatch config, once you have verified this repository",
+			}
+		}
+		return &UserError{
+			Summary: "Unable to open the task's worktree as a herdr workspace.",
+			Reason:  err.Error(),
+			Hints:   hints,
+			Err:     err,
+		}
+	}
+	return herdrError(fmt.Sprintf("Unable to create a herdr %s for this task.", layout), err)
 }
 
 func roleError(err error, rc *Context) error {
