@@ -78,9 +78,9 @@ func (m *model) viewFooter() string {
 	case screenHome:
 		keys = "↑/↓ move · enter select · n new task · r refresh · ? help · q quit"
 	case screenTasks:
-		keys = "↑/↓ move · enter details · o open session · x stop · tab switch list · n new · r refresh · q back"
+		keys = "↑/↓ move · enter details · o open · d done · x stop · tab switch list · n new · q back"
 	case screenDetail:
-		keys = "enter open session · x stop · q back"
+		keys = "enter open session · d done · x stop · q back"
 	case screenNew:
 		keys = "tab next field · ←/→ change · enter dispatch · esc cancel"
 	case screenRoles:
@@ -304,6 +304,8 @@ func (m *model) viewHelp() string {
 		"  n          new task",
 		"  enter      select / open details",
 		"  o          open the agent's herdr session in this terminal",
+		"  d          mark the selected task complete — it leaves Active,",
+		"             and its herdr session keeps running",
 		"  x          stop the selected task's agent",
 		"  tab        switch between Active / Needs you / Recent",
 		"  j k ↑ ↓    move",

@@ -159,6 +159,11 @@ type stoppedMsg struct {
 	err   error
 }
 
+type completedMsg struct {
+	title string
+	err   error
+}
+
 type attachedMsg struct{ err error }
 
 // changeMsg is one signal from herdr that live state moved. The TUI does not
@@ -271,6 +276,16 @@ func (m *model) stopCmd(view core.TaskView) tea.Cmd {
 	}
 }
 
+// completeCmd marks a task done in dispatch's registry and deliberately
+// leaves its herdr session alone — the same thing `dispatch done` does.
+func (m *model) completeCmd(view core.TaskView) tea.Cmd {
+	app := m.app
+	return func() tea.Msg {
+		_, err := app.Complete(context.Background(), view.ID)
+		return completedMsg{title: view.Title, err: err}
+	}
+}
+
 // openCmd suspends the TUI and hands the terminal to the live herdr session,
 // returning here when the user detaches.
 func (m *model) openCmd(view core.TaskView) tea.Cmd {
@@ -354,6 +369,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = fmt.Sprintf("stopped %q", msg.title)
+		return m, m.loadCmd()
+
+	case completedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.status = fmt.Sprintf("completed %q", msg.title)
 		return m, m.loadCmd()
 
 	case attachedMsg:
@@ -494,6 +517,21 @@ func (m *model) handleTasksKey(key string) (tea.Model, tea.Cmd) {
 	case "o":
 		if selected, ok := m.selected(); ok {
 			return m, m.openCmd(selected)
+		}
+	case "d":
+		if selected, ok := m.selected(); ok {
+			if selected.Status.Terminal() {
+				m.status = fmt.Sprintf("%q is already %s", truncate(selected.Title, 40), selected.Status)
+				return m, nil
+			}
+			// Completing is bookkeeping, not a teardown: the session keeps
+			// running, so this needs no confirmation gate the way stopping
+			// does. The task leaves the Active list, which is the point.
+			if m.screen == screenDetail {
+				// Its row is about to disappear from underneath the cursor.
+				m.screen = screenTasks
+			}
+			return m, m.completeCmd(selected)
 		}
 	case "x":
 		if selected, ok := m.selected(); ok {

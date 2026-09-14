@@ -388,6 +388,7 @@ dispatch
 | `n` | new task |
 | `enter` | select / open details |
 | `o` | open the agent's session in this terminal |
+| `d` | mark the selected task done — it leaves Active, its session lives on |
 | `x` | stop the selected task |
 | `tab` | cycle Active / Needs you / Recent |
 | `j` `k` `↑` `↓` | move |
