@@ -171,6 +171,27 @@ The four roles shipped by default:
 | `reviewer` | claude  | `none`     | reviews code without changing it                 |
 | `general`  | claude  | `none`     | research, planning, consultation, specialists    |
 
+### Isolation
+
+Every task gets its own git worktree and branch by default, whatever its role
+asks for. That is a statement about how you want to work rather than about what
+a specialism needs, so it lives in your config and outranks the role:
+
+```yaml
+# ~/.config/dispatch/config.yaml
+default_isolation: worktree   # worktree | none | "" (let each role decide)
+```
+
+Precedence is `--isolation` on the task, then `default_isolation`, then the
+role's own mode. Clear it (`default_isolation: ""`) and the table above governs
+again; a repository can set its own in `.dispatch/config.yaml`.
+
+Outside a git repository there is nothing to branch from. A worktree that only
+the blanket default asked for is given up — the agent runs in place and the
+task says so — but one you asked for with `--isolation worktree`, or that the
+role itself declares (`engineer`), is a requirement, and dispatch refuses
+rather than quietly doing something else.
+
 Roles compose. `extends` inherits another role and states only what differs:
 
 ```yaml
@@ -239,6 +260,7 @@ one.
 ```yaml
 # .dispatch/config.yaml
 branch_prefix: agent/
+default_isolation: none      # this repo is not worth a worktree per task
 project_instructions: |
   This repository ships a design system in packages/ui.
   Prefer its primitives over new CSS.
@@ -255,6 +277,7 @@ context:
 ```
 
 Resolution runs global defaults → global config → project overrides → task flags.
+Isolation follows the same order, with each role's declared mode last.
 
 ## Commands
 

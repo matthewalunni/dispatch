@@ -52,8 +52,13 @@ func newHarness(t *testing.T) *harness {
 	if _, err := roles.Seed(rolesDir); err != nil {
 		t.Fatal(err)
 	}
+	// default_isolation is deliberately cleared: most of these tests are
+	// about what a *role* asks for, and the shipped default (worktree) would
+	// otherwise answer for every one of them. The tests that are about the
+	// default set it themselves.
 	if err := os.WriteFile(configFile, []byte(
-		"default_role: general\nworktrees_dir: "+filepath.Join(dataDir, "worktrees")+"\n"), 0o644); err != nil {
+		"default_role: general\ndefault_isolation: \"\"\nworktrees_dir: "+
+			filepath.Join(dataDir, "worktrees")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1050,5 +1055,136 @@ func TestOrchestratorChildrenEachGetTheirOwnWorkspace(t *testing.T) {
 	}
 	if h.Herdr.OpenWorkspaceCount() != 4 {
 		t.Errorf("open workspaces = %d, want one per agent", h.Herdr.OpenWorkspaceCount())
+	}
+}
+
+// withDefaultIsolation rewrites the harness config with a given
+// default_isolation and reopens the App so it takes effect.
+func withDefaultIsolation(t *testing.T, h *harness, mode string) *harness {
+	t.Helper()
+	if err := os.WriteFile(h.ConfigPath, []byte(
+		"default_role: general\ndefault_isolation: \""+mode+"\"\nworktrees_dir: "+
+			filepath.Join(h.DataDir, "worktrees")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return reopen(t, h)
+}
+
+func TestTheConfiguredDefaultIsolationOutranksTheRole(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "worktree")
+
+	// A reviewer declares `isolation: none`, but the default is a statement
+	// about how this user wants to work, so it wins.
+	result := h.dispatch(t, DispatchRequest{Role: "reviewer", Title: "Review the diff"})
+
+	if result.Task.Isolation != roles.IsolationWorktree {
+		t.Errorf("Isolation = %q, want worktree from the configured default", result.Task.Isolation)
+	}
+	if result.Task.Worktree == "" || result.Task.Branch == "" {
+		t.Errorf("no worktree was prepared: %+v", result.Task)
+	}
+}
+
+func TestAnExplicitIsolationStillBeatsTheConfiguredDefault(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "worktree")
+
+	result := h.dispatch(t, DispatchRequest{
+		Role: "engineer", Title: "Quick fix in place", Isolation: "none",
+	})
+
+	if result.Task.Isolation != roles.IsolationNone || result.Task.Worktree != "" {
+		t.Errorf("the per-task flag lost to the default: %+v", result.Task)
+	}
+}
+
+func TestClearingDefaultIsolationHandsTheChoiceBackToRoles(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "")
+
+	reviewer := h.dispatch(t, DispatchRequest{Role: "reviewer", Title: "Read the diff"})
+	if reviewer.Task.Isolation != roles.IsolationNone {
+		t.Errorf("reviewer Isolation = %q, want the role's own mode", reviewer.Task.Isolation)
+	}
+	engineer := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	if engineer.Task.Isolation != roles.IsolationWorktree {
+		t.Errorf("engineer Isolation = %q, want the role's own mode", engineer.Task.Isolation)
+	}
+}
+
+func TestAnInvalidDefaultIsolationIsRefusedWithASuggestion(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "container")
+
+	_, err := h.Dispatch(context.Background(), DispatchRequest{
+		Dir: h.Repo, Role: "engineer", Title: "Do the thing",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal for an unknown default_isolation")
+	}
+	var userErr *UserError
+	if !errors.As(err, &userErr) {
+		t.Fatalf("err = %v, want a UserError", err)
+	}
+	if !strings.Contains(err.Error(), "default_isolation") {
+		t.Errorf("the error should name the setting at fault: %v", err)
+	}
+	if len(userErr.Hints) == 0 {
+		t.Error("a refusal should suggest what to do instead")
+	}
+}
+
+func TestTheDefaultWorktreeGivesWayOutsideARepository(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "worktree")
+	outside := t.TempDir()
+
+	// dispatch is meant to work from any directory, so a blanket default must
+	// not turn "run an agent here" into a refusal where there is no repo.
+	result, err := h.Dispatch(context.Background(), DispatchRequest{
+		Dir: outside, Role: "general", Title: "Research the options",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch outside a repo: %v", err)
+	}
+	if result.Task.Isolation != roles.IsolationNone || result.Task.Worktree != "" {
+		t.Errorf("the default worktree was not given up: %+v", result.Task)
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "not a git repository") {
+		t.Errorf("the user was not told why: %v", result.Warnings)
+	}
+	if len(h.Git.Added) != 0 {
+		t.Errorf("git worktree created outside a repository: %v", h.Git.Added)
+	}
+}
+
+func TestAnExplicitWorktreeIsStillRefusedOutsideARepository(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "worktree")
+	outside := t.TempDir()
+
+	// Asking for a worktree by name is a requirement, not a preference: the
+	// honest answer is a refusal, not a quiet downgrade.
+	_, err := h.Dispatch(context.Background(), DispatchRequest{
+		Dir: outside, Role: "general", Title: "Do the thing", Isolation: "worktree",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal for an explicit worktree outside a repository")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestARoleThatNeedsAWorktreeIsStillRefusedOutsideARepository(t *testing.T) {
+	h := withDefaultIsolation(t, newHarness(t), "worktree")
+	outside := t.TempDir()
+
+	// The engineer role declares `isolation: worktree` itself, so the blanket
+	// default is not the only thing asking for one — there is nothing here to
+	// quietly give up.
+	_, err := h.Dispatch(context.Background(), DispatchRequest{
+		Dir: outside, Role: "engineer", Title: "Do the thing",
+	})
+	if err == nil {
+		t.Fatal("expected a refusal outside a repository")
+	}
+	if !strings.Contains(err.Error(), "--isolation none") {
+		t.Errorf("error should suggest the way forward: %v", err)
 	}
 }

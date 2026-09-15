@@ -23,6 +23,12 @@ A project-local role file only needs the fields it wants to change. Anything it
 leaves out is inherited from the global role of the same name, so a repository
 can nudge a role without restating it.
 
+`isolation` is the exception to that order. Every role must declare one, but
+config's `default_isolation` (`worktree` out of the box) outranks it, because
+how you want your tasks separated is your decision rather than the role's. A
+role's own mode governs only when that setting is cleared — `default_isolation:
+""` — and `--isolation` on the task still beats both.
+
 ## Format
 
 ```yaml
@@ -30,7 +36,7 @@ name: engineer                  # required, [a-z0-9_-]; matched by --role
 description: Implementation specialist
 extends: reviewer               # optional; inherit another role, then override
 runtime: claude                 # required; must exist in config.yaml runtimes
-isolation: worktree             # required; none | worktree
+isolation: worktree             # required; none | worktree (see below)
 context:
   repository: true              # tell the agent it is inside an existing project
   discover_project_docs: true   # tell it to find CLAUDE.md / AGENTS.md / docs

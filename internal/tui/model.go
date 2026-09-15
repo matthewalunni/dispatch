@@ -101,7 +101,8 @@ type form struct {
 	roleNames []string
 	roleIdx   int
 	isolIdx   int
-	// isolOverride is false while the role's own isolation mode is in use.
+	// isolOverride is false while dispatch's own precedence decides — the
+	// configured default_isolation, or the role's mode when that is cleared.
 	isolOverride bool
 	field        int
 	submitting   bool
@@ -596,12 +597,12 @@ func (m *model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "left":
 		if !typing {
-			m.form.cycle(-1)
+			m.form.cycle(m.ctx, -1)
 			return m, nil
 		}
 	case "right":
 		if !typing {
-			m.form.cycle(1)
+			m.form.cycle(m.ctx, 1)
 			return m, nil
 		}
 	case "ctrl+d":
@@ -711,19 +712,34 @@ func (f *form) selectedRole() string {
 	return f.roleNames[f.roleIdx]
 }
 
-func (f *form) cycle(delta int) {
+func (f *form) cycle(rc *core.Context, delta int) {
 	switch f.field {
 	case fieldRole:
 		if len(f.roleNames) > 0 {
 			f.roleIdx = wrap(f.roleIdx+delta, len(f.roleNames))
-			// Choosing a role resets isolation back to that role's default.
+			// Choosing a role hands isolation back to dispatch's own
+			// precedence, which that role may well change.
 			f.isolOverride = false
 		}
 	case fieldIsolation:
 		modes := roles.IsolationModes()
+		if !f.isolOverride {
+			// The first nudge moves away from what the task would have got,
+			// not from wherever the cursor happened to be left.
+			f.isolIdx = indexOfMode(modes, f.effectiveIsolation(rc))
+		}
 		f.isolIdx = wrap(f.isolIdx+delta, len(modes))
 		f.isolOverride = true
 	}
+}
+
+func indexOfMode(modes []roles.IsolationMode, mode roles.IsolationMode) int {
+	for i, candidate := range modes {
+		if candidate == mode {
+			return i
+		}
+	}
+	return 0
 }
 
 func (f *form) focusCurrent() tea.Cmd {
@@ -734,19 +750,45 @@ func (f *form) focusCurrent() tea.Cmd {
 	return nil
 }
 
-// isolationLabel shows the effective isolation mode and where it came from.
-func (f *form) isolationLabel(rc *core.Context) string {
+// effectiveIsolation is the mode this task would get as the form stands.
+func (f *form) effectiveIsolation(rc *core.Context) roles.IsolationMode {
+	mode, _ := f.resolveIsolation(rc)
+	return mode
+}
+
+// resolveIsolation asks core for both the mode and its provenance, so the
+// form never has to keep its own copy of the precedence rules.
+func (f *form) resolveIsolation(rc *core.Context) (roles.IsolationMode, core.IsolationSource) {
 	if f.isolOverride {
-		return string(roles.IsolationModes()[f.isolIdx]) + dimStyle.Render("  (override)")
+		return roles.IsolationModes()[f.isolIdx], core.IsolationFromRequest
 	}
 	if rc == nil {
-		return "role default"
+		return roles.IsolationWorktree, core.IsolationFromConfig
 	}
 	role, err := rc.Roles.Get(f.selectedRole())
 	if err != nil {
-		return "role default"
+		return roles.IsolationWorktree, core.IsolationFromConfig
 	}
-	return string(role.Isolation) + dimStyle.Render("  (from role)")
+	mode, source, err := core.ResolveIsolation(rc.Config, role, "")
+	if err != nil {
+		// A broken default_isolation is the dispatch call's problem to
+		// report; the form just shows what the role asked for.
+		return role.Isolation, core.IsolationFromRole
+	}
+	return mode, source
+}
+
+// isolationLabel shows the effective isolation mode and where it came from.
+func (f *form) isolationLabel(rc *core.Context) string {
+	mode, source := f.resolveIsolation(rc)
+	switch source {
+	case core.IsolationFromRequest:
+		return string(mode) + dimStyle.Render("  (override)")
+	case core.IsolationFromConfig:
+		return string(mode) + dimStyle.Render("  (default)")
+	default:
+		return string(mode) + dimStyle.Render("  (from role)")
+	}
 }
 
 // quit tears down the watcher before leaving, so the event subscription and

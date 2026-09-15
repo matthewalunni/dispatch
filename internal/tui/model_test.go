@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -240,5 +241,54 @@ func TestSplitAssignment(t *testing.T) {
 					tc.in, title, description, tc.title, tc.description)
 			}
 		})
+	}
+}
+
+func TestTheFormShowsTheConfiguredDefaultIsolation(t *testing.T) {
+	h := newTUIHarness(t)
+	rc, err := h.app.Resolve(h.repo)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	m := newModel(h.app, "test")
+	m.ctx = rc
+	m.form.syncRoles(rc)
+
+	// The reviewer role declares `isolation: none`, but the shipped default
+	// is worktree and that is what the task would actually get — so that is
+	// what the form has to say.
+	m.form.selectRole("reviewer")
+	label := m.form.isolationLabel(rc)
+	if !strings.Contains(label, string(roles.IsolationWorktree)) {
+		t.Errorf("isolation label = %q, want the configured default", label)
+	}
+	if !strings.Contains(label, "default") {
+		t.Errorf("isolation label = %q, want it to say where the mode came from", label)
+	}
+}
+
+func TestCyclingIsolationStartsFromWhatTheTaskWouldGet(t *testing.T) {
+	h := newTUIHarness(t)
+	rc, err := h.app.Resolve(h.repo)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	m := newModel(h.app, "test")
+	m.ctx = rc
+	m.form.syncRoles(rc)
+	m.form.selectRole("reviewer")
+	m.form.field = fieldIsolation
+
+	// One nudge must move away from the effective mode (worktree), not from
+	// whatever index the form happened to be sitting on.
+	m.form.cycle(rc, 1)
+	if !m.form.isolOverride {
+		t.Fatal("cycling should mark the mode as an override")
+	}
+	if got := m.form.effectiveIsolation(rc); got != roles.IsolationNone {
+		t.Errorf("isolation = %q, want the other mode after one nudge", got)
+	}
+	if !strings.Contains(m.form.isolationLabel(rc), "override") {
+		t.Errorf("label = %q, want it to say the user chose this", m.form.isolationLabel(rc))
 	}
 }

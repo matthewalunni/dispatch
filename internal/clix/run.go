@@ -88,7 +88,7 @@ another agent or orchestrator can consume the result directly.`,
 	cmd.Flags().StringVar(&description, "description", "", "additional detail appended to the task")
 	cmd.Flags().StringVarP(&role, "role", "r", "", "agent role (default: config default_role)")
 	cmd.Flags().StringVar(&runtimeName, "runtime", "", "override the role's runtime")
-	cmd.Flags().StringVar(&isolation, "isolation", "", "override the role's isolation mode ("+roles.JoinIsolationModes()+")")
+	cmd.Flags().StringVar(&isolation, "isolation", "", "isolation for this task ("+roles.JoinIsolationModes()+"; default: config default_isolation)")
 	cmd.Flags().StringVarP(&branch, "branch", "b", "", "branch name for worktree isolation")
 	cmd.Flags().StringVar(&base, "base", "", "base ref for a new branch (default: current branch)")
 	cmd.Flags().StringVar(&parent, "parent", "", "parent task, recording lineage")

@@ -92,13 +92,14 @@ func (a *App) Dispatch(ctx context.Context, req DispatchRequest) (*DispatchResul
 		}
 	}
 
-	isolation := role.Isolation
-	if req.Isolation != "" {
-		parsed, err := roles.ParseIsolation(req.Isolation)
-		if err != nil {
-			return nil, &UserError{Summary: "Invalid isolation mode.", Reason: err.Error(), Err: err}
-		}
-		isolation = parsed
+	isolation, isolationSource, err := ResolveIsolation(rc.Config, role, req.Isolation)
+	if err != nil {
+		return nil, err
+	}
+	var warnings []string
+	if degraded, why := degradeIsolation(isolation, isolationSource, role, rc.Project); why != "" {
+		isolation = degraded
+		warnings = append(warnings, why)
 	}
 
 	// Fail before creating anything if the runtime binary is missing: a stale
@@ -240,7 +241,7 @@ func (a *App) Dispatch(ctx context.Context, req DispatchRequest) (*DispatchResul
 		CreatedAt:        now,
 	}
 
-	result := &DispatchResult{Prompt: initialPrompt}
+	result := &DispatchResult{Prompt: initialPrompt, Warnings: warnings}
 
 	if err := a.store.Create(ctx, &task); err != nil {
 		return nil, fmt.Errorf("persist task: %w", err)

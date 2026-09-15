@@ -29,8 +29,10 @@ type Role struct {
 	// Extends names another role to inherit from. The child's own fields win
 	// field by field, so `security-reviewer` can extend `reviewer` and state
 	// only what differs.
-	Extends      string        `yaml:"extends" json:"extends,omitempty"`
-	Runtime      string        `yaml:"runtime" json:"runtime"`
+	Extends string `yaml:"extends" json:"extends,omitempty"`
+	Runtime string `yaml:"runtime" json:"runtime"`
+	// Isolation is the workspace this role asks for. Every role must declare
+	// one, but config's default_isolation outranks it; see the roles README.
 	Isolation    IsolationMode `yaml:"isolation" json:"isolation"`
 	Context      Context       `yaml:"context" json:"context"`
 	Instructions string        `yaml:"instructions" json:"instructions"`

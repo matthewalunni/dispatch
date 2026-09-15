@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -59,12 +60,20 @@ type HerdrConfig struct {
 
 // Config is the merged dispatch configuration.
 type Config struct {
-	DefaultRole    string                   `yaml:"default_role" json:"default_role"`
-	DefaultRuntime string                   `yaml:"default_runtime" json:"default_runtime"`
-	WorktreesDir   string                   `yaml:"worktrees_dir" json:"worktrees_dir"`
-	BranchPrefix   string                   `yaml:"branch_prefix" json:"branch_prefix"`
-	Herdr          HerdrConfig              `yaml:"herdr" json:"herdr"`
-	Runtimes       map[string]RuntimeConfig `yaml:"runtimes" json:"runtimes"`
+	DefaultRole    string `yaml:"default_role" json:"default_role"`
+	DefaultRuntime string `yaml:"default_runtime" json:"default_runtime"`
+
+	// DefaultIsolation is the isolation mode every task gets unless its own
+	// --isolation flag says otherwise. It outranks the mode a role declares,
+	// because it is a statement about how you want to work rather than about
+	// what a specialism needs. Set it to "" to hand that decision back to
+	// each role.
+	DefaultIsolation string `yaml:"default_isolation" json:"default_isolation"`
+
+	WorktreesDir string                   `yaml:"worktrees_dir" json:"worktrees_dir"`
+	BranchPrefix string                   `yaml:"branch_prefix" json:"branch_prefix"`
+	Herdr        HerdrConfig              `yaml:"herdr" json:"herdr"`
+	Runtimes     map[string]RuntimeConfig `yaml:"runtimes" json:"runtimes"`
 
 	// ProjectInstructions is only meaningful in a project config. It is added
 	// verbatim to every initial prompt dispatched from that repository.
@@ -77,10 +86,11 @@ type Config struct {
 // Defaults returns the built-in configuration.
 func Defaults() Config {
 	return Config{
-		DefaultRole:    "general",
-		DefaultRuntime: "claude",
-		WorktreesDir:   paths.DefaultWorktreesDir(),
-		BranchPrefix:   "dispatch/",
+		DefaultRole:      "general",
+		DefaultRuntime:   "claude",
+		DefaultIsolation: "worktree",
+		WorktreesDir:     paths.DefaultWorktreesDir(),
+		BranchPrefix:     "dispatch/",
 		Herdr: HerdrConfig{
 			Binary:         "herdr",
 			Layout:         "workspace",
@@ -105,6 +115,12 @@ default_role: general
 
 # Runtime used when a role does not name one.
 default_runtime: claude
+
+# Isolation every task gets unless --isolation says otherwise. This outranks
+# the mode a role declares; clear it (default_isolation: "") to let each role
+# decide for itself. Outside a git repository a task falls back to running in
+# place, because there is nothing to branch from.
+default_isolation: worktree
 
 # Where isolated git worktrees are created. Never inside your source repo.
 worktrees_dir: ~/.local/share/dispatch/worktrees
@@ -255,6 +271,7 @@ func (c *Config) normalize() {
 type fileLayer struct {
 	DefaultRole         *string                  `yaml:"default_role"`
 	DefaultRuntime      *string                  `yaml:"default_runtime"`
+	DefaultIsolation    *string                  `yaml:"default_isolation"`
 	WorktreesDir        *string                  `yaml:"worktrees_dir"`
 	BranchPrefix        *string                  `yaml:"branch_prefix"`
 	ProjectInstructions *string                  `yaml:"project_instructions"`
@@ -297,6 +314,11 @@ func merge(base Config, layer fileLayer) Config {
 	}
 	if layer.DefaultRuntime != nil {
 		out.DefaultRuntime = *layer.DefaultRuntime
+	}
+	// Empty is meaningful here — it means "let the role decide" — so this
+	// assigns whatever the file said rather than treating "" as absent.
+	if layer.DefaultIsolation != nil {
+		out.DefaultIsolation = strings.TrimSpace(*layer.DefaultIsolation)
 	}
 	if layer.WorktreesDir != nil {
 		out.WorktreesDir = *layer.WorktreesDir

@@ -258,3 +258,63 @@ func TestEmptyLayoutNormalizesToWorkspace(t *testing.T) {
 		t.Errorf("Layout = %q", cfg.Herdr.Layout)
 	}
 }
+
+func TestDefaultIsolationIsWorktree(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DefaultIsolation != "worktree" {
+		t.Errorf("DefaultIsolation = %q, want worktree out of the box", cfg.DefaultIsolation)
+	}
+}
+
+func TestDefaultIsolationCanBeCleared(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	// An empty value is a decision, not an omission: it hands isolation back
+	// to each role, so it must survive the merge instead of falling through
+	// to the built-in default.
+	writeFile(t, path, "default_isolation: \"\"\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DefaultIsolation != "" {
+		t.Errorf("DefaultIsolation = %q, want it cleared", cfg.DefaultIsolation)
+	}
+}
+
+func TestProjectCanChooseItsOwnDefaultIsolation(t *testing.T) {
+	dir := t.TempDir()
+	global := filepath.Join(dir, "config.yaml")
+	writeFile(t, global, "default_isolation: worktree\n")
+	project := filepath.Join(dir, "repo", ".dispatch", "config.yaml")
+	writeFile(t, project, "default_isolation: none\n")
+
+	cfg, err := Load(global)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg, err = cfg.ApplyProject(project)
+	if err != nil {
+		t.Fatalf("ApplyProject: %v", err)
+	}
+	if cfg.DefaultIsolation != "none" {
+		t.Errorf("DefaultIsolation = %q, want the project's choice", cfg.DefaultIsolation)
+	}
+}
+
+func TestSeededConfigStatesTheDefaultIsolation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if _, err := Seed(path); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DefaultIsolation != "worktree" {
+		t.Errorf("DefaultIsolation = %q, want the seeded file to agree with the built-in default", cfg.DefaultIsolation)
+	}
+}
