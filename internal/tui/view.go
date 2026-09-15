@@ -82,7 +82,7 @@ func (m *model) viewFooter() string {
 	case screenDetail:
 		keys = "enter open session · d done · x stop · q back"
 	case screenNew:
-		keys = "tab next field · ←/→ change · enter dispatch · esc cancel"
+		keys = "tab next field · ←/→ change · ctrl+d dispatch · esc cancel"
 	case screenRoles:
 		keys = "↑/↓ move · enter dispatch with this role · q back"
 	case screenHelp:
@@ -205,7 +205,14 @@ func (m *model) viewNew() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s\n\n", titleStyle.Render("New task"))
 
-	fmt.Fprintf(&b, "  %s%s\n", label("Task", m.form.field == fieldTask), m.form.input.View())
+	// The assignment is multiline, so its label sits above it rather than
+	// beside it: the first line titles the task, the rest is detail.
+	fmt.Fprintf(&b, "  %s\n", label("Task", m.form.field == fieldTask))
+	fmt.Fprintf(&b, "%s\n", indent(m.form.input.View(), 4))
+	if m.form.field == fieldTask {
+		fmt.Fprintf(&b, "    %s\n", faintStyle.Render("first line names the task · enter for a new line · ctrl+d dispatches"))
+	}
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "  %s%s\n", label("Role", m.form.field == fieldRole), m.roleField())
 	fmt.Fprintf(&b, "  %s%s\n", label("Isolation", m.form.field == fieldIsolation), m.form.isolationLabel(m.ctx))
 
@@ -301,7 +308,8 @@ func (m *model) viewHelp() string {
 		"dispatch is a control centre. Conversations live in herdr;",
 		"this is where you start them and find your way back.",
 		"",
-		"  n          new task",
+		"  n          new task — the assignment is multiline: its first line",
+		"             names the task, the rest is detail for the agent",
 		"  enter      select / open details",
 		"  o          open the agent's herdr session in this terminal",
 		"  d          mark the selected task complete — it leaves Active,",

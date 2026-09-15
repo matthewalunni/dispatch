@@ -396,8 +396,20 @@ dispatch
 | `q` `esc` | back, or quit from home |
 | `?` | help |
 
-Creating a task is: launch dispatch, press `n`, type the task, pick a role,
-press enter.
+Creating a task is: launch dispatch, press `n`, write the assignment, pick a
+role, press `ctrl+d`.
+
+The assignment is multiline. Its first line names the task — that is what the
+slug, branch and herdr agent are built from — and anything after it is detail
+appended to the agent's opening prompt, exactly like `dispatch run
+--description`. So `enter` starts a new line, and `ctrl+d` dispatches:
+
+```
+  Task
+    ┃ Rework the first-run screen
+    ┃
+    ┃ Keep the old flow behind a flag, and don't touch the API client.
+```
 
 The TUI does not reproduce the terminal — conversations live in herdr. Opening
 a task hands your terminal to that agent and returns you here when you detach.

@@ -165,3 +165,80 @@ func TestCompletingFromTheDetailScreenReturnsToTheList(t *testing.T) {
 		t.Error("detail screen kept showing a task that left the list")
 	}
 }
+
+// typeText sends a run of characters to the focused field.
+func typeText(t *testing.T, m *model, text string) {
+	t.Helper()
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+}
+
+func TestTheAssignmentFieldTakesMultipleLines(t *testing.T) {
+	h := newTUIHarness(t)
+	m := newModel(h.app, "test")
+	m.screen = screenNew
+	m.form.input.Focus()
+
+	typeText(t, m, "Ship the onboarding revamp")
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	typeText(t, m, "Keep the old flow behind a flag.")
+
+	want := "Ship the onboarding revamp\n\nKeep the old flow behind a flag."
+	if got := m.form.input.Value(); got != want {
+		t.Errorf("value = %q, want %q", got, want)
+	}
+	if m.form.submitting || m.screen != screenNew {
+		t.Error("enter inside the assignment must not dispatch")
+	}
+}
+
+func TestCtrlDDispatchesTheForm(t *testing.T) {
+	h := newTUIHarness(t)
+	m := newModel(h.app, "test")
+	m.screen = screenNew
+	m.form.input.Focus()
+
+	// Empty is refused rather than dispatched.
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD}); cmd != nil {
+		t.Error("an empty assignment must not dispatch")
+	}
+	if m.err == nil {
+		t.Error("an empty assignment should say why it was refused")
+	}
+	m.err = nil
+
+	typeText(t, m, "Review the first-run changes")
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlD})
+	if cmd == nil {
+		t.Fatal("ctrl+d did not dispatch")
+	}
+	if !m.form.submitting {
+		t.Error("the form should show it is submitting")
+	}
+}
+
+func TestSplitAssignment(t *testing.T) {
+	cases := []struct {
+		name        string
+		in          string
+		title       string
+		description string
+	}{
+		{"one line", "Ship the revamp", "Ship the revamp", ""},
+		{"title and detail", "Ship the revamp\n\nStart with the first-run screen.",
+			"Ship the revamp", "Start with the first-run screen."},
+		{"leading blank lines", "\n  \nShip the revamp\ndetail", "Ship the revamp", "detail"},
+		{"blank", "\n  \n", "", ""},
+		{"crlf", "Ship it\r\ndetail", "Ship it", "detail"},
+		{"detail keeps its own line breaks", "Title\na\n\nb", "Title", "a\n\nb"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			title, description := splitAssignment(tc.in)
+			if title != tc.title || description != tc.description {
+				t.Errorf("splitAssignment(%q) = (%q, %q), want (%q, %q)",
+					tc.in, title, description, tc.title, tc.description)
+			}
+		})
+	}
+}

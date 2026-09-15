@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/matthewalunni/dispatch/internal/core"
@@ -95,7 +95,9 @@ type confirmation struct {
 }
 
 type form struct {
-	input     textinput.Model
+	// input is multiline: the first line becomes the task title, anything
+	// after it is detail appended to the agent's assignment.
+	input     textarea.Model
 	roleNames []string
 	roleIdx   int
 	isolIdx   int
@@ -104,6 +106,10 @@ type form struct {
 	field        int
 	submitting   bool
 }
+
+// taskFieldHeight is how many lines of the assignment are visible at once;
+// the field scrolls beyond that.
+const taskFieldHeight = 5
 
 const (
 	fieldTask = iota
@@ -120,11 +126,12 @@ func run(app *core.App, version string) error {
 }
 
 func newModel(app *core.App, version string) *model {
-	input := textinput.New()
+	input := textarea.New()
 	input.Placeholder = "What should the agent do?"
-	input.CharLimit = 500
-	input.Width = 60
-	input.Prompt = "› "
+	input.CharLimit = 4000
+	input.ShowLineNumbers = false
+	input.SetWidth(60)
+	input.SetHeight(taskFieldHeight)
 
 	return &model{
 		app:     app,
@@ -252,7 +259,7 @@ func (m *model) loadCmd() tea.Cmd {
 
 func (m *model) dispatchCmd() tea.Cmd {
 	app := m.app
-	title := strings.TrimSpace(m.form.input.Value())
+	title, description := splitAssignment(m.form.input.Value())
 	role := m.form.selectedRole()
 	isolation := ""
 	if m.form.isolOverride {
@@ -260,9 +267,10 @@ func (m *model) dispatchCmd() tea.Cmd {
 	}
 	return func() tea.Msg {
 		result, err := app.Dispatch(context.Background(), core.DispatchRequest{
-			Title:     title,
-			Role:      role,
-			Isolation: isolation,
+			Title:       title,
+			Description: description,
+			Role:        role,
+			Isolation:   isolation,
 		})
 		return dispatchedMsg{result: result, err: err}
 	}
@@ -312,7 +320,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.form.input.Width = maxInt(30, msg.Width-24)
+		m.form.input.SetWidth(maxInt(30, msg.Width-24))
 		return m, nil
 
 	case changeMsg:
@@ -356,7 +364,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.result.Warnings) > 0 {
 			m.status += " (" + msg.result.Warnings[0] + ")"
 		}
-		m.form.input.SetValue("")
+		m.form.input.Reset()
 		m.form.field = fieldTask
 		m.screen = screenTasks
 		m.scope = scopeActive
@@ -444,9 +452,8 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.screen = screenNew
 		m.form.field = fieldTask
-		m.form.input.Focus()
 		m.status = ""
-		return m, textinput.Blink
+		return m, m.form.input.Focus()
 	case "r":
 		m.status = "refreshed"
 		return m, m.loadCmd()
@@ -488,8 +495,7 @@ func (m *model) handleHomeKey(key string) (tea.Model, tea.Cmd) {
 		m.taskCursor = 0
 		if item.screen == screenNew {
 			m.form.field = fieldTask
-			m.form.input.Focus()
-			return m, textinput.Blink
+			return m, m.form.input.Focus()
 		}
 		return m, m.loadCmd()
 	}
@@ -557,50 +563,93 @@ func (m *model) handleRolesKey(key string) (tea.Model, tea.Cmd) {
 			m.form.selectRole(all[m.roleCursor].Name)
 			m.screen = screenNew
 			m.form.field = fieldTask
-			m.form.input.Focus()
-			return m, textinput.Blink
+			return m, m.form.input.Focus()
 		}
 	}
 	return m, nil
 }
 
 func (m *model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	typing := m.form.field == fieldTask
 	switch msg.String() {
 	case "esc":
 		m.form.input.Blur()
 		m.screen = screenHome
 		return m, nil
-	case "tab", "down":
+	case "tab":
 		m.form.field = wrap(m.form.field+1, fieldCount)
 		return m, m.form.focusCurrent()
-	case "shift+tab", "up":
+	case "shift+tab":
 		m.form.field = wrap(m.form.field-1, fieldCount)
 		return m, m.form.focusCurrent()
+	case "down":
+		// Arrows belong to the text while it is being written; they only move
+		// between fields once the cursor is out of the assignment.
+		if !typing {
+			m.form.field = wrap(m.form.field+1, fieldCount)
+			return m, m.form.focusCurrent()
+		}
+	case "up":
+		if !typing {
+			m.form.field = wrap(m.form.field-1, fieldCount)
+			return m, m.form.focusCurrent()
+		}
 	case "left":
-		m.form.cycle(-1)
-		return m, nil
+		if !typing {
+			m.form.cycle(-1)
+			return m, nil
+		}
 	case "right":
-		m.form.cycle(1)
-		return m, nil
+		if !typing {
+			m.form.cycle(1)
+			return m, nil
+		}
+	case "ctrl+d":
+		// The one key that dispatches from anywhere in the form, because
+		// enter now belongs to the assignment.
+		return m, m.submit()
 	case "enter":
-		if strings.TrimSpace(m.form.input.Value()) == "" {
-			m.err = fmt.Errorf("a task needs a description")
-			return m, nil
+		// A multiline assignment needs enter for what it is for; the other
+		// fields keep it as the obvious way to finish.
+		if !typing {
+			return m, m.submit()
 		}
-		if m.form.submitting {
-			return m, nil
-		}
-		m.form.submitting = true
-		m.status = "dispatching…"
-		return m, m.dispatchCmd()
 	}
 
-	if m.form.field == fieldTask {
+	if typing {
 		var cmd tea.Cmd
 		m.form.input, cmd = m.form.input.Update(msg)
 		return m, cmd
 	}
 	return m, nil
+}
+
+// submit dispatches the form, refusing an empty assignment.
+func (m *model) submit() tea.Cmd {
+	if strings.TrimSpace(m.form.input.Value()) == "" {
+		m.err = fmt.Errorf("a task needs a description")
+		return nil
+	}
+	if m.form.submitting {
+		return nil
+	}
+	m.form.submitting = true
+	m.status = "dispatching…"
+	return m.dispatchCmd()
+}
+
+// splitAssignment reads the form's text as "title, then detail": the first
+// non-empty line names the task — it is what a slug, branch and herdr agent
+// are built from — and everything after it is detail for the agent.
+func splitAssignment(value string) (title, description string) {
+	lines := strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		return strings.TrimSpace(line), strings.TrimSpace(strings.Join(lines[i+1:], "\n"))
+	}
+	return "", ""
 }
 
 // ------------------------------------------------------------------ helpers
@@ -679,8 +728,7 @@ func (f *form) cycle(delta int) {
 
 func (f *form) focusCurrent() tea.Cmd {
 	if f.field == fieldTask {
-		f.input.Focus()
-		return textinput.Blink
+		return f.input.Focus()
 	}
 	f.input.Blur()
 	return nil
