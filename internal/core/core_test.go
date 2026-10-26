@@ -1155,3 +1155,59 @@ func TestWaitTreatsEndedLikeDetached(t *testing.T) {
 	}
 	t.Error("DefaultWaitStates should include ended")
 }
+
+func TestRedispatchingALongTitleNeverRevivesTheEndedTask(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	const title = "Implement the very long feature name for onboarding screens"
+
+	var ended []*DispatchResult
+	for i := 0; i < 2; i++ {
+		result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: title})
+		h.endSession(t, result, time.Duration(i+2)*time.Minute)
+		if _, err := h.ActiveViews(ctx); err != nil {
+			t.Fatal(err)
+		}
+		ended = append(ended, result)
+	}
+	fresh := h.dispatch(t, DispatchRequest{Role: "engineer", Title: title})
+
+	views, err := h.ActiveViews(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].ID != fresh.Task.ID {
+		t.Fatalf("ActiveViews = %+v, want only the new task", views)
+	}
+	seen := map[string]bool{fresh.Task.HerdrAgent: true}
+	for _, old := range ended {
+		task, _ := h.Store().Get(ctx, old.Task.ID)
+		if task.Status != store.StatusEnded {
+			t.Errorf("old task %s status = %q, want it to stay ended", task.ID, task.Status)
+		}
+		if seen[task.HerdrAgent] {
+			t.Errorf("agent name %q reused across tasks", task.HerdrAgent)
+		}
+		seen[task.HerdrAgent] = true
+	}
+}
+
+func TestHydrateDoesNotReviveAnEndedTaskOverAnotherTasksAgent(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	old := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	h.endSession(t, old, 2*time.Minute)
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A new task that ends up on the same agent name (an explicit override)
+	// owns that agent; the ended task must not come back on it.
+	fresh := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Other work", AgentName: old.Task.HerdrAgent})
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.Store().Get(ctx, old.Task.ID)
+	if task.Status != store.StatusEnded {
+		t.Errorf("old task status = %q, want ended while %s owns the agent", task.Status, fresh.Task.ID)
+	}
+}

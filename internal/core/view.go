@@ -130,33 +130,73 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 // reachable, so an outage never ends anything.
 //
 // A running task whose agent is gone past EndGrace becomes ended; an ended
-// task whose agent has returned becomes running again.
+// task whose own agent has returned becomes running again. Agent names and
+// pane ids can be reused, so an ended task is revived only on an exact match
+// and never onto an agent a live task already claims.
 func (a *App) reconcile(ctx context.Context, live map[string]herdrx.Agent) map[string]store.Status {
 	changed := map[string]store.Status{}
-	tasks, err := a.store.List(ctx, store.Filter{Statuses: []store.Status{store.StatusRunning, store.StatusEnded}})
+	tasks, err := a.store.List(ctx, store.ActiveOrEndedFilter())
 	if err != nil {
 		return changed
 	}
-	for _, task := range tasks {
-		_, alive := lookupAgent(live, task)
-		switch {
-		case task.Status == store.StatusRunning && !alive && a.now().Sub(task.CreatedAt) > EndGrace:
-			// Reconciliation is best effort: a failure here is retried on the
-			// next hydrate and must never fail the caller.
-			if err := a.store.SetStatus(ctx, task.ID, store.StatusEnded); err != nil {
-				continue
-			}
-			task.Status = store.StatusEnded
-			_ = WriteResult(a.dataDir, task, "session closed outside dispatch")
-			changed[task.ID] = store.StatusEnded
-		case task.Status == store.StatusEnded && alive:
-			if err := a.store.SetStatus(ctx, task.ID, store.StatusRunning); err != nil {
-				continue
-			}
-			changed[task.ID] = store.StatusRunning
+	for i, task := range tasks {
+		if task.Status != store.StatusRunning {
+			continue
+		}
+		if _, alive := lookupAgent(live, task); alive || a.now().Sub(task.CreatedAt) <= EndGrace {
+			continue
+		}
+		// Reconciliation is best effort: a failure here is retried on the
+		// next hydrate and must never fail the caller.
+		if err := a.store.SetStatus(ctx, task.ID, store.StatusEnded); err != nil {
+			continue
+		}
+		tasks[i].Status = store.StatusEnded
+		_ = WriteResult(a.dataDir, tasks[i], "session closed outside dispatch")
+		changed[task.ID] = store.StatusEnded
+	}
+
+	claimed := map[string]bool{}
+	claim := func(task store.Task) {
+		if task.HerdrAgent != "" {
+			claimed[task.HerdrAgent] = true
+		}
+		if task.HerdrPaneID != "" {
+			claimed[task.HerdrPaneID] = true
 		}
 	}
+	for _, task := range tasks {
+		if !task.Status.Terminal() {
+			claim(task)
+		}
+	}
+	// Newest first, so if several ended tasks match one agent the most
+	// recent is the one revived.
+	for _, task := range tasks {
+		if task.Status != store.StatusEnded || claimed[task.HerdrAgent] || claimed[task.HerdrPaneID] {
+			continue
+		}
+		if !ownAgentAlive(live, task) {
+			continue
+		}
+		if err := a.store.SetStatus(ctx, task.ID, store.StatusRunning); err != nil {
+			continue
+		}
+		claim(task)
+		changed[task.ID] = store.StatusRunning
+	}
 	return changed
+}
+
+// ownAgentAlive reports whether herdr has the task's agent back: when both a
+// name and a pane id are stored, both must match the same live agent.
+func ownAgentAlive(live map[string]herdrx.Agent, task store.Task) bool {
+	if task.HerdrAgent != "" && task.HerdrPaneID != "" {
+		agent, ok := live[task.HerdrAgent]
+		return ok && agent.Name == task.HerdrAgent && agent.PaneID == task.HerdrPaneID
+	}
+	_, ok := lookupAgent(live, task)
+	return ok
 }
 
 // HydrateOne is Hydrate for a single task.

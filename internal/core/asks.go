@@ -192,7 +192,8 @@ func (a *App) deliverPending(ctx context.Context, live map[string]herdrx.Agent) 
 	}
 	for _, ask := range asks {
 		task, err := a.store.Get(ctx, ask.TaskID)
-		if err != nil {
+		// An ended task's agent name or pane may now belong to someone else.
+		if err != nil || task.Status.Terminal() {
 			continue
 		}
 		agent, ok := lookupAgent(live, task)
