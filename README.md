@@ -400,26 +400,47 @@ instructions, rather than something dispatch infers.
 dispatch
 ```
 
-```
-  Dispatch  repvault
+It opens on the Inbox: everything an agent is waiting on you for, each one
+answerable with a key, above a quiet list of what is still working.
 
-  › New task
-    Active      4
-    Needs you   2
-    Recent     11
-    Roles       6
 ```
+  Dispatch  all projects  [1 Inbox]  2 Board  3 Recent  4 Roles  ● 3 need you  ● 1 working  ● live
+
+  NEEDS YOU
+› ◆ DECISION  How should Search Ads get the new screenshots?        growth · RepClock · 12m
+      a  ★ Custom Product Page  faster · short review
+      b  Ship with 1.0.2        changes the main listing
+      a/b answer and the agent carries on · m reply · o open the conversation
+  ○ CHORE     Set up Search Ads account + billing                   growth · RepClock · 12m
+                ☐ Create account   ☐ Add a card
+                blocks: campaign setup
+  ▲ BLOCKED   Offline sync                                          engineer · ReadFlow · 1h
+                Do you want to proceed? (y/n)
+
+  WORKING
+    ● engineer      ReadFlow      adding offline sync tests · 2 of 3          1h
+```
+
+A decision is an ask with options; `★` marks the one the agent recommends.
+A chore is something only you can do, like creating an account. A blocked or
+done agent that filed no ask still shows up, with the tail of its screen. Once
+you answer, the item reads `answered · delivered`, or `answered · waiting to
+deliver` until the agent can take it.
 
 | key | |
 |---|---|
+| `1` `2` `3` `4` | Inbox / Board / Recent / Roles (`tab` cycles) |
+| `a` `b` `c` … | answer a decision with that option |
+| `m` | reply to a decision in your own words |
+| `d` | mark a chore done |
+| `enter` | read the full message, or open details |
 | `n` | new task |
-| `enter` | select / open details |
 | `o` | open the agent's session in this terminal |
 | `x` | stop the selected task |
-| `tab` | cycle Active / Needs you / Recent |
+| `p` | all projects / this project |
 | `j` `k` `↑` `↓` | move |
 | `r` | refresh |
-| `q` `esc` | back, or quit from home |
+| `q` `esc` | back, or quit from the tabs |
 | `?` | help |
 
 Creating a task is: launch dispatch, press `n`, type the task, pick a role,
