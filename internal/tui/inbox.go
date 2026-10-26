@@ -37,6 +37,10 @@ func (m *model) setOverview(o *core.Overview) {
 			delete(m.pending, id)
 		}
 	}
+	if m.replying && !hasOpenAsk(items, m.replyAskID) {
+		m.cancelReply()
+		m.status = "reply cancelled: that ask is no longer open"
+	}
 	if had {
 		for i, item := range items {
 			if itemKey(item) == itemKey(before) {
@@ -67,6 +71,15 @@ func (m *model) selectedItem() (core.InboxItem, bool) {
 		return core.InboxItem{}, false
 	}
 	return items[m.inboxCursor], true
+}
+
+func hasOpenAsk(items []core.InboxItem, askID string) bool {
+	for _, item := range items {
+		if item.Ask != nil && item.Ask.ID == askID {
+			return item.Ask.State == store.AskOpen
+		}
+	}
+	return false
 }
 
 func hasAsk(items []core.InboxItem, askID string) bool {
@@ -117,6 +130,7 @@ func (m *model) handleInboxKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.replying = true
+		m.replyAskID = item.Ask.ID
 		m.reply.SetValue("")
 		m.reply.Width = maxInt(30, m.contentWidth()-16)
 		m.reply.Focus()
@@ -140,23 +154,27 @@ func (m *model) handleInboxKey(key string) (tea.Model, tea.Cmd) {
 func (m *model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.replying = false
-		m.reply.Blur()
+		m.cancelReply()
 		return m, nil
 	case "enter":
 		note := strings.TrimSpace(m.reply.Value())
-		m.replying = false
-		m.reply.Blur()
-		item, ok := m.selectedItem()
-		if note == "" || !ok || item.Ask == nil || m.inFlight[item.Ask.ID] {
+		askID := m.replyAskID
+		m.cancelReply()
+		if note == "" || askID == "" || !hasOpenAsk(m.inboxItems(), askID) || m.inFlight[askID] {
 			return m, nil
 		}
 		m.status = "sending reply…"
-		return m, m.answerCmd(item.Ask.ID, core.Answer{Option: -1, Note: note})
+		return m, m.answerCmd(askID, core.Answer{Option: -1, Note: note})
 	}
 	var cmd tea.Cmd
 	m.reply, cmd = m.reply.Update(msg)
 	return m, cmd
+}
+
+func (m *model) cancelReply() {
+	m.replying = false
+	m.replyAskID = ""
+	m.reply.Blur()
 }
 
 // inboxAnswer is the answer a key gives an inbox item: a letter picks a

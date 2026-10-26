@@ -267,3 +267,34 @@ func TestReplySendsANote(t *testing.T) {
 		t.Error("the ask should be marked in flight")
 	}
 }
+
+func TestReplyStaysWithItsAskAcrossReloads(t *testing.T) {
+	other := decisionAsk()
+	other.ID = "ask-B"
+	other.Title = "A different decision"
+	m := testModel(nil)
+	m.setOverview(&core.Overview{Inbox: []core.InboxItem{
+		{Task: task("t1", "growth", "RepClock", "x"), Ask: decisionAsk()},
+		{Task: task("t2", "engineer", "ReadFlow", "y"), Ask: other},
+	}})
+	m.handleKey(key("m"))
+	for _, r := range "use the page" {
+		m.handleKey(key(string(r)))
+	}
+
+	// ask-1 is answered elsewhere and leaves the inbox; the cursor's index now
+	// points at ask-B.
+	m.setOverview(&core.Overview{Inbox: []core.InboxItem{
+		{Task: task("t2", "engineer", "ReadFlow", "y"), Ask: other},
+	}})
+	if m.replying {
+		t.Fatal("the reply should be cancelled once its ask is gone")
+	}
+	if !strings.Contains(m.status, "reply cancelled") {
+		t.Errorf("status = %q, want a cancellation notice", m.status)
+	}
+	m.handleKey(key("enter"))
+	if m.inFlight["ask-B"] || m.inFlight["ask-1"] {
+		t.Errorf("no answer should be sent, in flight = %v", m.inFlight)
+	}
+}

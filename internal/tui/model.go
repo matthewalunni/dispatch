@@ -69,6 +69,9 @@ type model struct {
 	expanded bool
 	replying bool
 	reply    textinput.Model
+	// replyAskID is the ask the open reply answers, fixed when it was opened
+	// so a reload that moves the cursor cannot redirect it.
+	replyAskID string
 	// inFlight holds asks whose answer is being sent, so a second key press
 	// does not send it twice.
 	inFlight map[string]bool
