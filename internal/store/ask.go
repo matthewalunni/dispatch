@@ -149,37 +149,14 @@ func (s *Store) ListAsks(ctx context.Context, f AskFilter) ([]Ask, error) {
 	return out, rows.Err()
 }
 
-// SetAskState moves an ask to a new state. Answered stamps answered_at and
-// records the answer; delivered stamps delivered_at and keeps the answer.
-func (s *Store) SetAskState(ctx context.Context, id string, state AskState, answer string) error {
-	var res sql.Result
-	var err error
-	switch state {
-	case AskAnswered:
-		res, err = s.db.ExecContext(ctx, `UPDATE asks SET state=?, answer=?, answered_at=? WHERE id=?`,
-			string(state), answer, nowString(), id)
-	case AskDelivered:
-		res, err = s.db.ExecContext(ctx, `UPDATE asks SET state=?, delivered_at=? WHERE id=?`,
-			string(state), nowString(), id)
-	default:
-		res, err = s.db.ExecContext(ctx, `UPDATE asks SET state=? WHERE id=?`, string(state), id)
-	}
-	if err != nil {
-		return fmt.Errorf("update ask: %w", err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
 // ErrAskState is returned when an ask is not in the state a transition
 // expected, typically because another caller moved it first.
 var ErrAskState = errors.New("ask is not in the expected state")
 
 // TransitionAsk moves an ask from one state to another only if it is still in
-// the from state, so concurrent callers cannot both win. It stamps times and
-// records the answer exactly as SetAskState does.
+// the from state, so concurrent callers cannot both win. Answered stamps
+// answered_at and records the answer; delivered stamps delivered_at and keeps
+// the answer.
 func (s *Store) TransitionAsk(ctx context.Context, id string, from, to AskState, answer string) error {
 	var res sql.Result
 	var err error

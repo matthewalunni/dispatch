@@ -65,7 +65,7 @@ func TestListAsksFiltersByStateAndTask(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SetAskState(ctx, "ask_3", AskWithdrawn, ""); err != nil {
+	if err := s.TransitionAsk(ctx, "ask_3", AskOpen, AskWithdrawn, ""); err != nil {
 		t.Fatal(err)
 	}
 	open, err := s.ListAsks(ctx, AskFilter{States: []AskState{AskOpen}})
@@ -88,29 +88,29 @@ func TestListAsksFiltersByStateAndTask(t *testing.T) {
 	}
 }
 
-func TestSetAskStateStampsTimes(t *testing.T) {
+func TestTransitionAskStampsTimes(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	a := Ask{ID: "ask_1", TaskID: "t1", Kind: AskDecision, Title: "x", State: AskOpen}
 	if err := s.CreateAsk(ctx, &a); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAskState(ctx, "ask_1", AskAnswered, "sqlite"); err != nil {
+	if err := s.TransitionAsk(ctx, "ask_1", AskOpen, AskAnswered, "sqlite"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetAsk(ctx, "ask_1")
 	if got.State != AskAnswered || got.Answer != "sqlite" || got.AnsweredAt == nil || got.DeliveredAt != nil {
 		t.Fatalf("after answer: %+v", got)
 	}
-	if err := s.SetAskState(ctx, "ask_1", AskDelivered, ""); err != nil {
+	if err := s.TransitionAsk(ctx, "ask_1", AskAnswered, AskDelivered, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = s.GetAsk(ctx, "ask_1")
 	if got.State != AskDelivered || got.Answer != "sqlite" || got.AnsweredAt == nil || got.DeliveredAt == nil {
 		t.Fatalf("after delivery: %+v", got)
 	}
-	if err := s.SetAskState(ctx, "missing", AskWithdrawn, ""); err != ErrNotFound {
-		t.Fatalf("SetAskState missing = %v, want ErrNotFound", err)
+	if err := s.TransitionAsk(ctx, "missing", AskOpen, AskWithdrawn, ""); err != ErrNotFound {
+		t.Fatalf("TransitionAsk missing = %v, want ErrNotFound", err)
 	}
 }
 
