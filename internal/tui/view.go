@@ -191,7 +191,7 @@ func (m *model) tabKeys() string {
 	switch m.tab {
 	case tabInbox:
 		if m.replying {
-			return "enter send · esc cancel"
+			return "enter send · tab option · esc cancel"
 		}
 		return "j/k move · a/b choose · m reply · d chore done · enter more · o open · x stop · " + shared
 	case tabBoard:
@@ -387,6 +387,7 @@ func (m *model) viewHelp() string {
 		"  idle       ready for input",
 		"  done       finished a turn you have not looked at",
 		"  detached   dispatch has the task but herdr lost the session",
+		"  ended      the session closed outside dispatch; it comes back if the agent does",
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s\n\n", titleStyle.Render("Help"))

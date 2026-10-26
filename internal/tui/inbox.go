@@ -138,6 +138,7 @@ func (m *model) handleInboxKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.replying = true
 		m.replyAskID = item.Ask.ID
+		m.replyOption = -1
 		m.reply.SetValue("")
 		m.reply.Width = maxInt(30, m.contentWidth()-16)
 		m.reply.Focus()
@@ -157,30 +158,61 @@ func (m *model) handleInboxKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleReplyKey drives the one-line reply input.
+// handleReplyKey drives the one-line reply input. tab cycles an option to
+// send alongside the note: none, a, b, … and back to none.
 func (m *model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.cancelReply()
 		return m, nil
+	case "tab":
+		if ask := m.replyAsk(); ask != nil && len(ask.Options) > 0 {
+			m.replyOption = wrap(m.replyOption+2, len(ask.Options)+1) - 1
+		}
+		return m, nil
 	case "enter":
-		note := strings.TrimSpace(m.reply.Value())
-		askID := m.replyAskID
+		askID, ans, ok := m.replyAnswer()
 		m.cancelReply()
-		if note == "" || askID == "" || !hasOpenAsk(m.inboxItems(), askID) || m.inFlight[askID] {
+		if !ok || m.inFlight[askID] {
 			return m, nil
 		}
 		m.status = "sending reply…"
-		return m, m.answerCmd(askID, core.Answer{Option: -1, Note: note})
+		return m, m.answerCmd(askID, ans)
 	}
 	var cmd tea.Cmd
 	m.reply, cmd = m.reply.Update(msg)
 	return m, cmd
 }
 
+// replyAsk is the open ask the reply answers, or nil once it is gone.
+func (m *model) replyAsk() *store.Ask {
+	for _, item := range m.inboxItems() {
+		if item.Ask != nil && item.Ask.ID == m.replyAskID && item.Ask.State == store.AskOpen {
+			return item.Ask
+		}
+	}
+	return nil
+}
+
+// replyAnswer is what enter would send: the note, with the chosen option if
+// any. It is not ok when there is nothing to send or the ask has gone.
+func (m *model) replyAnswer() (string, core.Answer, bool) {
+	ask := m.replyAsk()
+	note := strings.TrimSpace(m.reply.Value())
+	if ask == nil || (note == "" && m.replyOption < 0) {
+		return "", core.Answer{}, false
+	}
+	option := m.replyOption
+	if option >= len(ask.Options) {
+		option = -1
+	}
+	return ask.ID, core.Answer{Option: option, Note: note}, true
+}
+
 func (m *model) cancelReply() {
 	m.replying = false
 	m.replyAskID = ""
+	m.replyOption = -1
 	m.reply.Blur()
 }
 
@@ -318,7 +350,12 @@ func (m *model) renderInboxItem(item core.InboxItem, selected bool, width int, n
 	case ask != nil && ask.State == store.AskAnswered:
 		b.WriteString("      " + warnStyle.Render("answered · "+pendingLabel(m.pending[ask.ID])) + "\n")
 	case selected && m.replying:
+		with := "with no option · tab adds one"
+		if ask != nil && m.replyOption >= 0 && m.replyOption < len(ask.Options) {
+			with = "with " + optionKey(m.replyOption) + " " + ask.Options[m.replyOption].Label + " · tab changes it"
+		}
 		b.WriteString("      " + m.reply.View() + "\n")
+		b.WriteString("      " + faintStyle.Render(with) + "\n")
 	case selected:
 		b.WriteString("      " + faintStyle.Render(itemHint(item)) + "\n")
 	}

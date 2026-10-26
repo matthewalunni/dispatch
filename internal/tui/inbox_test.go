@@ -316,3 +316,65 @@ func TestLoadsAreSingleFlight(t *testing.T) {
 		t.Error("with nothing new since, the load should not repeat")
 	}
 }
+
+func TestReplyKeepsSpacesWhileAnErrorShows(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	m.err = errors.New("an earlier answer failed")
+	for _, k := range []tea.KeyMsg{key("u"), {Type: tea.KeySpace, Runes: []rune(" ")}, key("p")} {
+		m.handleKey(k)
+	}
+	if got := m.reply.Value(); got != "u p" {
+		t.Errorf("reply = %q, want the space kept while an error shows", got)
+	}
+	if !m.replying {
+		t.Error("typing must keep the reply open")
+	}
+}
+
+func TestReplyCanCarryAnOption(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	if m.replyOption != -1 {
+		t.Fatalf("a reply starts with no option, got %d", m.replyOption)
+	}
+	m.handleKey(key("tab"))
+	m.handleKey(key("tab"))
+	if m.replyOption != 1 {
+		t.Fatalf("tab twice should select option b, got %d", m.replyOption)
+	}
+	assertContains(t, m.viewInbox(0), "with b")
+	for _, r := range "but keep it short" {
+		m.handleKey(key(string(r)))
+	}
+	if got := m.reply.Value(); got != "but keep it short" {
+		t.Errorf("reply = %q", got)
+	}
+	if askID, ans, ok := m.replyAnswer(); !ok || askID != "ask-1" || ans.Option != 1 || ans.Note != "but keep it short" {
+		t.Errorf("reply answer = %q %+v %v, want option b with the note", askID, ans, ok)
+	}
+	_, cmd := m.handleKey(key("enter"))
+	if cmd == nil || !m.inFlight["ask-1"] {
+		t.Fatal("enter should send the reply")
+	}
+
+	// A third tab wraps back to no option, so a reply can still go alone.
+	m = testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	for i := 0; i < 3; i++ {
+		m.handleKey(key("tab"))
+	}
+	if m.replyOption != -1 {
+		t.Errorf("tab should wrap back to no option, got %d", m.replyOption)
+	}
+}
+
+func TestHelpListsTheEndedStatus(t *testing.T) {
+	assertContains(t, testModel(&core.Overview{}).viewHelp(), "ended")
+}

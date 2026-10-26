@@ -438,13 +438,14 @@ func TestCloseSessionMatchesWhatWasCreated(t *testing.T) {
 }
 
 func TestReadAgentAsksForRecentTextAndReturnsIt(t *testing.T) {
-	binary, logPath := stubHerdr(t, `echo '{"id":"x","result":{"type":"agent_read","read":{"text":"Proceed? (y/n)"}}}'`)
+	// `herdr agent read --format text` prints the screen as plain text.
+	binary, logPath := stubHerdr(t, `printf 'line one\nline two\n'`)
 
 	got, err := NewCLI(binary, "").ReadAgent(context.Background(), "fix-login", 6)
 	if err != nil {
 		t.Fatalf("ReadAgent: %v", err)
 	}
-	if got != "Proceed? (y/n)" {
+	if got != "line one\nline two" {
 		t.Errorf("text = %q", got)
 	}
 	if args := readLog(t, logPath); !strings.Contains(args, "agent read fix-login --source recent --lines 6 --format text") {
@@ -452,14 +453,24 @@ func TestReadAgentAsksForRecentTextAndReturnsIt(t *testing.T) {
 	}
 }
 
-func TestReadAgentAcceptsPlainText(t *testing.T) {
-	binary, _ := stubHerdr(t, `printf 'line one\nline two\n'`)
+func TestReadAgentReturnsAScreenThatLooksLikeJSONVerbatim(t *testing.T) {
+	screen := `{"result":{"text":"not the screen"}}`
+	binary, _ := stubHerdr(t, "printf '%s\\n' '"+screen+"'")
 
 	got, err := NewCLI(binary, "").ReadAgent(context.Background(), "fix-login", 2)
 	if err != nil {
 		t.Fatalf("ReadAgent: %v", err)
 	}
-	if got != "line one\nline two" {
-		t.Errorf("text = %q", got)
+	if got != screen {
+		t.Errorf("text = %q, want the screen as printed", got)
+	}
+}
+
+func TestReadAgentReportsHerdrsErrorEnvelope(t *testing.T) {
+	binary, _ := stubHerdr(t, `echo '{"id":"x","error":{"code":"agent_not_found","message":"no such agent"}}' >&2; exit 1`)
+
+	_, err := NewCLI(binary, "").ReadAgent(context.Background(), "gone", 2)
+	if !IsCode(err, CodeAgentNotFound) {
+		t.Errorf("err = %v, want agent_not_found", err)
 	}
 }

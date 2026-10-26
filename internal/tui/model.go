@@ -72,6 +72,8 @@ type model struct {
 	// replyAskID is the ask the open reply answers, fixed when it was opened
 	// so a reload that moves the cursor cannot redirect it.
 	replyAskID string
+	// replyOption is the option sent with the reply, -1 for none; tab cycles it.
+	replyOption int
 	// inFlight holds asks whose answer is being sent, so a second key press
 	// does not send it twice.
 	inFlight map[string]bool
@@ -165,6 +167,7 @@ func newModel(app *core.App, version string) *model {
 		allProjects: true,
 		form:        form{input: input},
 		reply:       reply,
+		replyOption: -1,
 		inFlight:    map[string]bool{},
 		pending:     map[string]string{},
 		loading:     true,
@@ -471,6 +474,11 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.quit()
 	}
 
+	// A reply being typed owns space, enter and esc, even under an error.
+	if m.replying {
+		return m.handleReplyKey(msg)
+	}
+
 	// Dismiss an error banner with any key rather than trapping the user.
 	if m.err != nil && (key == "esc" || key == "enter" || key == " ") {
 		m.err = nil
@@ -479,9 +487,6 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.screen == screenNew {
 		return m.handleNewKey(msg)
-	}
-	if m.replying {
-		return m.handleReplyKey(msg)
 	}
 
 	switch key {

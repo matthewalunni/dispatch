@@ -631,41 +631,15 @@ func (c *CLI) PromptAgent(ctx context.Context, target, text string) error {
 	return err
 }
 
-// ReadAgent returns the agent's recent screen. herdr may wrap the text in its
-// JSON envelope or print it bare, so both are accepted.
+// ReadAgent returns the agent's recent screen. With `--format text` herdr
+// prints the screen as plain text; its errors arrive as a JSON envelope on
+// stderr, which run already turns into an *Error.
 func (c *CLI) ReadAgent(ctx context.Context, target string, lines int) (string, error) {
 	out, err := c.run(ctx, "agent", "read", target, "--source", "recent", "--lines", strconv.Itoa(lines), "--format", "text")
 	if err != nil {
 		return "", err
 	}
-	var env envelope
-	if json.Unmarshal(out, &env) == nil && (env.Result != nil || env.Error != nil) {
-		if env.Error != nil {
-			return "", env.Error
-		}
-		return strings.TrimSpace(findText(env.Result)), nil
-	}
 	return string(out), nil
-}
-
-// findText digs the first "text" string out of a decoded herdr result.
-func findText(raw json.RawMessage) string {
-	var obj map[string]json.RawMessage
-	if json.Unmarshal(raw, &obj) != nil {
-		return ""
-	}
-	if t, ok := obj["text"]; ok {
-		var s string
-		if json.Unmarshal(t, &s) == nil {
-			return s
-		}
-	}
-	for _, v := range obj {
-		if s := findText(v); s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func (c *CLI) ListAgents(ctx context.Context) ([]Agent, error) {

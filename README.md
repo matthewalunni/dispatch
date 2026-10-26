@@ -424,14 +424,15 @@ answerable with a key, above a quiet list of what is still working.
 A decision is an ask with options; `★` marks the one the agent recommends.
 A chore is something only you can do, like creating an account. A blocked or
 done agent that filed no ask still shows up, with the tail of its screen. Once
-you answer, the item reads `answered · delivered`, or `answered · waiting to
-deliver` until the agent can take it.
+you answer, the status line reads `answered · delivered` and the item leaves
+the inbox; an answer the agent cannot take yet stays, marked `answered ·
+waiting to deliver`, until it is delivered.
 
 | key | |
 |---|---|
 | `1` `2` `3` `4` | Inbox / Board / Recent / Roles (`tab` cycles) |
 | `a` `b` `c` … | answer a decision with that option |
-| `m` | reply to a decision in your own words |
+| `m` | reply to a decision in your own words; `tab` in the reply picks an option to send with it |
 | `d` | mark a chore done |
 | `enter` | read the full message, or open details |
 | `n` | new task |
