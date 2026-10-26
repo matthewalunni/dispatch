@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/matthewalunni/dispatch/internal/herdrx"
 	"github.com/matthewalunni/dispatch/internal/store"
@@ -222,5 +224,32 @@ func TestWithdrawnAskCannotBeAnswered(t *testing.T) {
 	}
 	if err := h.WithdrawAsk(ctx, ask.ID); err == nil {
 		t.Error("want an error withdrawing twice")
+	}
+}
+
+func TestOverlappingHydratesDeliverAPendingAnswerOnce(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	task := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"}).Task
+	ask, _ := h.FileAsk(ctx, task.ID, decisionAsk())
+	h.Herdr.PromptErrFor = map[string]error{task.SessionRef(): errors.New("nope")}
+	if _, err := h.AnswerAsk(ctx, ask.ID, Answer{Option: 0}); err != nil {
+		t.Fatal(err)
+	}
+	h.Herdr.PromptErrFor = nil
+	h.Herdr.PromptDelay = 50 * time.Millisecond
+	before := len(h.Herdr.Prompts)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = h.ActiveViews(ctx)
+		}()
+	}
+	wg.Wait()
+	if got := len(h.Herdr.Prompts) - before; got != 1 {
+		t.Errorf("answer prompted %d times, want exactly once", got)
 	}
 }

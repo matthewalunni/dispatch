@@ -298,3 +298,21 @@ func TestReplyStaysWithItsAskAcrossReloads(t *testing.T) {
 		t.Errorf("no answer should be sent, in flight = %v", m.inFlight)
 	}
 }
+
+func TestLoadsAreSingleFlight(t *testing.T) {
+	m := testModel(&core.Overview{})
+	if m.loadCmd() == nil {
+		t.Fatal("first load should start")
+	}
+	if m.loadCmd() != nil {
+		t.Error("a second load while one is in flight should wait, not run alongside")
+	}
+	_, cmd := m.Update(loadedMsg{overview: &core.Overview{}})
+	if cmd == nil {
+		t.Fatal("a change during the load should trigger one follow-up load")
+	}
+	_, cmd = m.Update(loadedMsg{overview: &core.Overview{}})
+	if cmd != nil {
+		t.Error("with nothing new since, the load should not repeat")
+	}
+}

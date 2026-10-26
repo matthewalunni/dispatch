@@ -153,12 +153,23 @@ func (a *App) AnswerAsk(ctx context.Context, askID string, ans Answer) (*AnswerR
 		}
 		return nil, err
 	}
-	reason, delivered := a.deliver(ctx, task, ask.ID, text)
+	reason, delivered := a.deliverOnce(ctx, task, ask.ID, text)
 	stored, err := a.store.GetAsk(ctx, ask.ID)
 	if err != nil {
 		return nil, err
 	}
 	return &AnswerResult{Ask: stored, Delivered: delivered, Reason: reason}, nil
+}
+
+// deliverOnce is deliver under deliverMu, skipping an answer that an
+// overlapping deliverPending already got through.
+func (a *App) deliverOnce(ctx context.Context, task store.Task, askID, text string) (string, bool) {
+	a.deliverMu.Lock()
+	defer a.deliverMu.Unlock()
+	if current, err := a.store.GetAsk(ctx, askID); err == nil && current.State == store.AskDelivered {
+		return "", true
+	}
+	return a.deliver(ctx, task, askID, text)
 }
 
 // deliver types an answer into the task's session and marks the ask delivered
@@ -185,7 +196,13 @@ func (a *App) deliver(ctx context.Context, task store.Task, askID, text string) 
 // deliverPending retries answers that could not be delivered earlier. It makes
 // one attempt per answer and skips agents that are gone or blocked, so a
 // stuck session never stalls a hydrate. Best effort: failures stay answered.
+// A hydrate that finds another delivery in progress skips its turn rather
+// than prompting the same answer again; the next hydrate retries.
 func (a *App) deliverPending(ctx context.Context, live map[string]herdrx.Agent) {
+	if !a.deliverMu.TryLock() {
+		return
+	}
+	defer a.deliverMu.Unlock()
 	asks, err := a.store.ListAsks(ctx, store.AskFilter{States: []store.AskState{store.AskAnswered}})
 	if err != nil {
 		return

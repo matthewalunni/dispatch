@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/matthewalunni/dispatch/internal/config"
@@ -50,6 +51,10 @@ type App struct {
 
 	// seeded records what first-run setup created, for `dispatch doctor`.
 	seeded []string
+
+	// deliverMu serialises answer delivery within this process, so two
+	// overlapping hydrates never type the same answer twice.
+	deliverMu sync.Mutex
 }
 
 // New builds an App, performing safe first-run setup.

@@ -87,6 +87,10 @@ type model struct {
 	views      []core.TaskView
 	taskCursor int
 	loading    bool
+	// loadInFlight keeps one load running at a time, so an older load can
+	// never land over a newer one; reloadAfter asks for one more once it does.
+	loadInFlight bool
+	reloadAfter  bool
 
 	// Resolved project context, refreshed on load.
 	ctx *core.Context
@@ -241,7 +245,18 @@ func (m *model) startWatch() tea.Cmd {
 	return waitForChange(ch)
 }
 
+// loadCmd starts a load, or, if one is already running, queues a single
+// follow-up so changes that arrive meanwhile are still picked up.
 func (m *model) loadCmd() tea.Cmd {
+	if m.loadInFlight {
+		m.reloadAfter = true
+		return nil
+	}
+	m.loadInFlight = true
+	return m.fetchCmd()
+}
+
+func (m *model) fetchCmd() tea.Cmd {
 	app := m.app
 	allProjects := m.allProjects
 	// The Recent list costs a second hydrate, so it loads only when shown.
@@ -362,9 +377,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loadedMsg:
 		m.loading = false
+		m.loadInFlight = false
+		var again tea.Cmd
+		if m.reloadAfter {
+			m.reloadAfter = false
+			again = m.loadCmd()
+		}
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
+			return m, again
 		}
 		m.ctx = msg.ctx
 		m.setOverview(msg.overview)
@@ -375,7 +396,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.taskCursor >= len(m.views) {
 			m.taskCursor = maxInt(0, len(m.views)-1)
 		}
-		return m, nil
+		return m, again
 
 	case answeredMsg:
 		delete(m.inFlight, msg.askID)

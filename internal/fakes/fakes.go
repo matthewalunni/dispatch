@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/matthewalunni/dispatch/internal/gitx"
 	"github.com/matthewalunni/dispatch/internal/herdrx"
@@ -158,6 +159,9 @@ type Herdr struct {
 	// PromptErrFor fails PromptAgent for the named targets only, so one agent
 	// can reject a prompt while the others accept it.
 	PromptErrFor map[string]error
+	// PromptDelay holds each PromptAgent call open, so concurrent callers
+	// overlap the way a slow herdr would make them.
+	PromptDelay time.Duration
 	// Screens maps an agent name to what ReadAgent returns for it.
 	Screens map[string]string
 	// ReadErr, when set, fails every ReadAgent call.
@@ -334,6 +338,7 @@ func (h *Herdr) PromptAgent(_ context.Context, target, text string) error {
 	if h.PromptErr != nil {
 		return h.PromptErr
 	}
+	time.Sleep(h.PromptDelay)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if err := h.PromptErrFor[target]; err != nil {
