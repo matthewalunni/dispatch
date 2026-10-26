@@ -62,11 +62,11 @@ func TestBoardStacksOnNarrowTerminals(t *testing.T) {
 	m.tab = tabBoard
 
 	m.width = 120
-	lines := nonBlank(m.viewBoard())
+	lines := nonBlank(m.viewBoard(0))
 	assertContains(t, lines[0], "NEEDS YOU · 1", "WORKING · 4", "IDLE · 0", "DONE TODAY · 1")
 
 	m.width = 80
-	out := m.viewBoard()
+	out := m.viewBoard(0)
 	prev := -1
 	for _, h := range []string{"NEEDS YOU · 1", "WORKING · 4", "IDLE · 0", "DONE TODAY · 1"} {
 		i := strings.Index(out, h)

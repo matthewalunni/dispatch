@@ -15,10 +15,28 @@ func (m *model) View() string {
 		return ""
 	}
 
+	header, banner, footer := m.viewHeader(), m.viewBanner(), m.viewFooter()
+	sections := func(body string) string {
+		parts := []string{header, body}
+		if banner != "" {
+			parts = append(parts, banner)
+		}
+		parts = append(parts, footer)
+		return strings.Join(parts, "\n") + "\n"
+	}
+
+	// Bubble Tea keeps only the last height lines of a view that is too tall,
+	// which would cut the tab bar off, so the body gets what the header,
+	// banner and footer leave over.
+	maxBody := 0
+	if m.height > 0 {
+		maxBody = maxInt(1, m.height-lineCount(sections(""))+1)
+	}
+
 	var body string
 	switch m.screen {
 	case screenMain:
-		body = m.viewTab()
+		body = m.viewTab(maxBody)
 	case screenNew:
 		body = m.viewNew()
 	case screenDetail:
@@ -26,26 +44,65 @@ func (m *model) View() string {
 	case screenHelp:
 		body = m.viewHelp()
 	}
-
-	sections := []string{m.viewHeader(), body}
-	if banner := m.viewBanner(); banner != "" {
-		sections = append(sections, banner)
-	}
-	sections = append(sections, m.viewFooter())
-	return strings.Join(sections, "\n") + "\n"
+	return sections(body)
 }
 
-func (m *model) viewTab() string {
+// viewTab renders the active tab; maxBody, when positive, is how many lines
+// the Inbox and Board may take.
+func (m *model) viewTab(maxBody int) string {
 	switch m.tab {
 	case tabBoard:
-		return m.viewBoard()
+		return m.viewBoard(maxBody)
 	case tabRecent:
 		return m.viewTasks()
 	case tabRoles:
 		return m.viewRoles()
 	default:
-		return m.viewInbox()
+		return m.viewInbox(maxBody)
 	}
+}
+
+// lineCount is how many terminal lines s draws.
+func lineCount(s string) int { return strings.Count(s, "\n") + 1 }
+
+// fitLines cuts s to at most max lines, keeping lines focusStart..focusEnd in
+// view. A non-positive max means no limit.
+func fitLines(s string, focusStart, focusEnd, max int) string {
+	lines := strings.Split(s, "\n")
+	if max <= 0 || len(lines) <= max {
+		return s
+	}
+	return strings.Join(scrollWindow(lines, focusStart, focusEnd, max), "\n")
+}
+
+// scrollWindow returns height lines around the focus, the top of the focus
+// winning when it is taller than the window. A line at each end says when
+// there is more beyond it.
+func scrollWindow(lines []string, focusStart, focusEnd, height int) []string {
+	if len(lines) <= height {
+		return lines
+	}
+	if height < 3 {
+		start := maxInt(0, minInt(focusStart, len(lines)-height))
+		return lines[start : start+height]
+	}
+	inner := height - 2
+	start := 0
+	if focusEnd >= inner {
+		start = minInt(focusStart, focusEnd+1-inner)
+	}
+	start = maxInt(0, minInt(start, len(lines)-inner))
+	above, below := "", ""
+	if start > 0 {
+		above = "  " + faintStyle.Render("↑ more")
+	}
+	if start+inner < len(lines) {
+		below = "  " + faintStyle.Render("↓ more")
+	}
+	out := make([]string, 0, height)
+	out = append(out, above)
+	out = append(out, lines[start:start+inner]...)
+	return append(out, below)
 }
 
 func (m *model) viewHeader() string {

@@ -129,7 +129,9 @@ func (m *model) handleBoardKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) viewBoard() string {
+// viewBoard renders the board in at most maxLines lines (no limit when not
+// positive), scrolled to keep the selected card on screen.
+func (m *model) viewBoard(maxLines int) string {
 	if m.overview == nil {
 		return "\n  " + dimStyle.Render("loading…") + "\n"
 	}
@@ -147,14 +149,22 @@ func (m *model) viewBoard() string {
 		cardWidth = (total - boardGap*(len(boardColumns)-1)) / len(boardColumns)
 	}
 
+	// focus is the selected card's line range within its column.
 	columns := make([]string, len(boardColumns))
+	focusCol, focusStart, focusEnd := -1, 0, 0
 	for i, c := range boardColumns {
 		cards := m.boardCards(c)
 		header := headerStyle.Render(cell(fmt.Sprintf("%s · %d", columnTitle(c), len(cards)), cardWidth))
 		parts := []string{header}
+		height := lipgloss.Height(header)
 		for row, v := range cards {
 			selected := c == m.boardCol && row == m.boardRow
-			parts = append(parts, renderCardStyled(v, childrenOf(v, all), cardWidth, now, selected))
+			card := renderCardStyled(v, childrenOf(v, all), cardWidth, now, selected)
+			if selected {
+				focusCol, focusStart, focusEnd = i, height, height+lipgloss.Height(card)-1
+			}
+			parts = append(parts, card)
+			height += lipgloss.Height(card)
 		}
 		if len(cards) == 0 {
 			parts = append(parts, "  "+faintStyle.Render("—"))
@@ -163,7 +173,34 @@ func (m *model) viewBoard() string {
 	}
 
 	if !sideBySide {
-		return "\n" + indent(lipgloss.JoinVertical(lipgloss.Left, interleave(columns)...), 2) + "\n"
+		// Stacked, the columns scroll as one list: find the card in it.
+		start, end := 1, 1
+		offset := 1 // the leading blank line
+		for i, col := range columns {
+			if i == focusCol {
+				start, end = offset+focusStart, offset+focusEnd
+			}
+			offset += lipgloss.Height(col) + 1
+		}
+		out := "\n" + indent(lipgloss.JoinVertical(lipgloss.Left, interleave(columns)...), 2) + "\n"
+		return fitLines(out, start, end, maxLines)
+	}
+
+	// Side by side, each column scrolls on its own under its header, within
+	// the lines left once the blank lines above and below are taken.
+	if colHeight := maxLines - 2; maxLines > 0 {
+		for i, col := range columns {
+			lines := strings.Split(col, "\n")
+			if len(lines) <= colHeight || colHeight < 2 {
+				continue
+			}
+			start, end := 0, 0
+			if i == focusCol {
+				start, end = focusStart-1, focusEnd-1
+			}
+			lines = append(lines[:1:1], scrollWindow(lines[1:], start, end, colHeight-1)...)
+			columns[i] = strings.Join(lines, "\n")
+		}
 	}
 	spaced := make([]string, 0, len(columns)*2)
 	for i, col := range columns {

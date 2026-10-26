@@ -90,7 +90,7 @@ func TestInboxRendersADecisionWithItsRecommendation(t *testing.T) {
 		Inbox:    []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
 		NeedsYou: 1,
 	})
-	out := m.viewInbox()
+	out := m.viewInbox(0)
 	assertContains(t, out,
 		"How should Search Ads get the new screenshots?",
 		"a  ★ Custom Product Page",
@@ -103,14 +103,14 @@ func TestInboxRendersADecisionWithItsRecommendation(t *testing.T) {
 	}
 
 	m.handleKey(key("enter"))
-	assertContains(t, m.viewInbox(), "The full reasoning lives here.")
+	assertContains(t, m.viewInbox(0), "The full reasoning lives here.")
 }
 
 func TestInboxRendersAChoreChecklist(t *testing.T) {
 	m := testModel(&core.Overview{
 		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: choreAsk()}},
 	})
-	assertContains(t, m.viewInbox(), "CHORE", "Set up Search Ads account + billing",
+	assertContains(t, m.viewInbox(0), "CHORE", "Set up Search Ads account + billing",
 		"☐ Create account", "☐ Add a card", "blocks: campaign setup")
 }
 
@@ -120,13 +120,13 @@ func TestInboxFallbackCardShowsScreenTail(t *testing.T) {
 	m := testModel(&core.Overview{
 		Inbox: []core.InboxItem{{Task: v, Screen: "line one\nline two\nline three\nDo you want to proceed? (y/n)\n"}},
 	})
-	out := m.viewInbox()
+	out := m.viewInbox(0)
 	assertContains(t, out, "BLOCKED", "Offline sync", "engineer", "ReadFlow", "Do you want to proceed? (y/n)")
 	if strings.Contains(out, "line one") {
 		t.Errorf("collapsed card should show only the tail:\n%s", out)
 	}
 	m.handleKey(key("enter"))
-	assertContains(t, m.viewInbox(), "line one")
+	assertContains(t, m.viewInbox(0), "line one")
 }
 
 func TestInboxShowsTheQuietWorkingList(t *testing.T) {
@@ -136,7 +136,7 @@ func TestInboxShowsTheQuietWorkingList(t *testing.T) {
 	quiet := task("t4", "designer", "RepClock", "Onboarding variants")
 	quiet.AgentStatus = herdrx.StatusIdle
 	m := testModel(&core.Overview{Working: []core.TaskView{busy, quiet}, WorkingCount: 1})
-	assertContains(t, m.viewInbox(), "nothing needs you", "WORKING",
+	assertContains(t, m.viewInbox(0), "nothing needs you", "WORKING",
 		"adding offline sync tests · 2 of 3", "Onboarding variants")
 }
 
@@ -220,7 +220,7 @@ func TestPendingDeliveryIsLabelled(t *testing.T) {
 	m := testModel(&core.Overview{
 		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: ask}},
 	})
-	assertContains(t, m.viewInbox(), "answered · waiting to deliver")
+	assertContains(t, m.viewInbox(0), "answered · waiting to deliver")
 }
 
 func TestAnswerResultBanner(t *testing.T) {
@@ -237,7 +237,7 @@ func TestAnswerResultBanner(t *testing.T) {
 	ask := decisionAsk()
 	ask.State = store.AskAnswered
 	m.overview = &core.Overview{Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "x"), Ask: ask}}}
-	assertContains(t, m.viewInbox(), "answered · waiting to deliver (agent is busy)")
+	assertContains(t, m.viewInbox(0), "answered · waiting to deliver (agent is busy)")
 
 	m.Update(answeredMsg{askID: "ask-1", err: errors.New("ask ask-1 is answered and cannot be answered")})
 	if m.err == nil {

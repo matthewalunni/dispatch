@@ -228,7 +228,9 @@ func pendingLabel(reason string) string {
 
 // ------------------------------------------------------------------ view
 
-func (m *model) viewInbox() string {
+// viewInbox renders the inbox in at most maxLines lines (no limit when not
+// positive), scrolled to keep the selected item on screen.
+func (m *model) viewInbox(maxLines int) string {
 	var b strings.Builder
 	if m.overview == nil {
 		b.WriteString("\n  " + dimStyle.Render("loading…") + "\n")
@@ -241,8 +243,15 @@ func (m *model) viewInbox() string {
 	if len(m.overview.Inbox) == 0 {
 		b.WriteString("  " + dimStyle.Render("nothing needs you") + "\n")
 	}
+	focusStart, focusEnd := 0, 1
 	for i, item := range m.overview.Inbox {
+		if i == m.inboxCursor {
+			focusStart = strings.Count(b.String(), "\n")
+		}
 		b.WriteString(m.renderInboxItem(item, i == m.inboxCursor, width, now))
+		if i == m.inboxCursor {
+			focusEnd = strings.Count(b.String(), "\n") - 1
+		}
 	}
 
 	if len(m.overview.Working) > 0 {
@@ -251,7 +260,7 @@ func (m *model) viewInbox() string {
 			b.WriteString(renderWorking(v, width, now))
 		}
 	}
-	return b.String()
+	return fitLines(b.String(), focusStart, focusEnd, maxLines)
 }
 
 func (m *model) renderInboxItem(item core.InboxItem, selected bool, width int, now time.Time) string {
