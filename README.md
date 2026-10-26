@@ -268,6 +268,8 @@ Resolution runs global defaults → global config → project overrides → task
 | `dispatch show <task>` | everything about a task (`--prompt` for what was sent) |
 | `dispatch stop <task>` | end the agent session |
 | `dispatch done <task>` | mark complete, leaving the session running |
+| `dispatch status "<doing now>"` | an agent reports what it is doing (`--progress 2/3`) |
+| `dispatch ask decision` / `ask chore` / `ask withdraw` | an agent files something it needs from you |
 | `dispatch roles` / `roles show` / `roles schema` | role discovery |
 | `dispatch role init <name>` | generate a starter role file |
 | `dispatch doctor` | diagnose the environment |
@@ -301,6 +303,21 @@ dispatch run --role engineer --task "Implement feature X" --json
 
 `status` is the resolved state a human would read; `dispatch_status` and
 `agent_status` expose dispatch's and herdr's views separately when you need them.
+
+Agents report back from inside their own session, where dispatch exports
+`DISPATCH_TASK_ID` (override with `--task <ref>`):
+
+```sh
+dispatch status "wiring the endpoint" --progress 2/3
+dispatch ask decision "How should we ship the page?" \
+  --option "Custom Product Page | faster, no new build" \
+  --option "Ship with 1.0.2" --recommend 1
+dispatch ask chore "Add the App Store key" --item "Create the key" --blocks "TestFlight upload"
+```
+
+`--recommend` is 1-based. `--body` or `--body-file <path|->` adds a longer
+explanation. In `ls --json`, a task with a status or open asks also carries
+`doing_now`, `progress` and `open_asks`.
 
 ### Parent and child tasks
 

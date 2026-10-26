@@ -3,6 +3,7 @@ package clix
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -111,21 +112,38 @@ func printTaskTable(views []core.TaskView, showProject bool) {
 		return
 	}
 	now := time.Now().UTC()
-	tw := newTabWriter(os.Stdout)
-	if showProject {
-		fmt.Fprintln(tw, styleDim("PROJECT\tTASK\tROLE\tSTATUS\tAGE\tREF"))
-	} else {
-		fmt.Fprintln(tw, styleDim("TASK\tROLE\tSTATUS\tAGE\tREF"))
-	}
+	showAsks := false
 	for _, v := range views {
-		status := statusLabel(v.Effective)
-		if showProject {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				truncate(v.ProjectName, 18), truncate(v.Title, 44), v.Role, status, v.Age(now), v.Slug)
-		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-				truncate(v.Title, 52), v.Role, status, v.Age(now), v.Slug)
+		if len(v.OpenAsks) > 0 {
+			showAsks = true
 		}
+	}
+	tw := newTabWriter(os.Stdout)
+	header := "TASK\tROLE\tSTATUS\tAGE"
+	if showAsks {
+		header += "\tASKS"
+	}
+	header += "\tREF"
+	if showProject {
+		header = "PROJECT\t" + header
+	}
+	fmt.Fprintln(tw, styleDim(header))
+	for _, v := range views {
+		cols := []string{truncate(v.Title, 44), v.Role, statusLabel(v.Effective), v.Age(now)}
+		if showProject {
+			cols = append([]string{truncate(v.ProjectName, 18)}, cols...)
+		} else {
+			cols[0] = truncate(v.Title, 52)
+		}
+		if showAsks {
+			asks := ""
+			if n := len(v.OpenAsks); n > 0 {
+				asks = styleWarn(fmt.Sprintf("%d", n))
+			}
+			cols = append(cols, asks)
+		}
+		cols = append(cols, v.Slug)
+		fmt.Fprintln(tw, strings.Join(cols, "\t"))
 	}
 	tw.Flush()
 }
