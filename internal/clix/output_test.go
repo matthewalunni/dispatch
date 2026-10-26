@@ -181,3 +181,10 @@ func TestTaskJSONIncludesAskCountAndReport(t *testing.T) {
 		}
 	}
 }
+
+func TestWaitAcceptsEnded(t *testing.T) {
+	states, err := parseStates([]string{"ended"})
+	if err != nil || len(states) != 1 || states[0] != core.EffectiveEnded {
+		t.Errorf("parseStates(ended) = %v, %v", states, err)
+	}
+}

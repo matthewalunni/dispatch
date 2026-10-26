@@ -133,7 +133,9 @@ func GroupOverview(active, recent []TaskView, now time.Time) *Overview {
 	sort.SliceStable(asks, func(i, j int) bool { return asks[i].Ask.CreatedAt.After(asks[j].Ask.CreatedAt) })
 	o.Inbox = append(asks, cards...)
 
-	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// "Today" is the user's day: dispatch's clock runs in UTC.
+	local := now.In(time.Local)
+	midnight := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
 	for _, v := range recent {
 		if v.Status.Terminal() && v.CompletedAt != nil && !v.CompletedAt.Before(midnight) {
 			o.Board[ColumnDoneToday] = append(o.Board[ColumnDoneToday], v)

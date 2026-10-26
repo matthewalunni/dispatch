@@ -28,7 +28,8 @@ hand out work, then block on it instead of polling ` + "`dispatch ls`" + ` in a 
 It is event-driven where herdr supports it, with a slow poll as a safety net.
 
 By default it returns when the agent is waiting on a human, idle, done, or its
-session has gone away. Exit status is 0 when a state matched and 2 on timeout,
+session has gone away (detached, or ended once it has been gone a while;
+` + "`--until detached`" + ` matches both). Exit status is 0 when a state matched and 2 on timeout,
 so a script can tell the two apart without parsing anything.`,
 		Example: `  dispatch wait implement-feature-x
   dispatch wait implement-feature-x --until waiting --timeout 10m
@@ -79,7 +80,7 @@ so a script can tell the two apart without parsing anything.`,
 	}
 
 	cmd.Flags().StringSliceVar(&until, "until", nil,
-		"states to wait for (default: waiting, idle, done, detached)")
+		"states to wait for (default: waiting, idle, done, detached, ended; detached also matches ended)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "give up after this long (e.g. 10m); 0 waits forever")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable output")
 	return cmd
@@ -92,6 +93,7 @@ var waitableStates = []core.EffectiveStatus{
 	core.EffectiveIdle,
 	core.EffectiveDone,
 	core.EffectiveDetached,
+	core.EffectiveEnded,
 	core.EffectiveStopped,
 	core.EffectiveCompleted,
 	core.EffectiveFailed,

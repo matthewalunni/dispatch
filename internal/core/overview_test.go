@@ -156,3 +156,24 @@ func TestOverviewFiltersByProject(t *testing.T) {
 		t.Errorf("scoped tasks = %d, want 1", n)
 	}
 }
+
+func TestGroupDoneTodayUsesLocalMidnightForAUTCClock(t *testing.T) {
+	saved := time.Local
+	time.Local = time.FixedZone("UTC-7", -7*60*60)
+	t.Cleanup(func() { time.Local = saved })
+
+	// 03:00 UTC on the 27th is 20:00 on the 26th locally.
+	now := time.Date(2026, 10, 27, 3, 0, 0, 0, time.UTC)
+	recent := func(id string, at time.Time) TaskView {
+		return TaskView{Task: store.Task{ID: id, Status: store.StatusCompleted, CompletedAt: &at}}
+	}
+	o := GroupOverview(nil, []TaskView{
+		recent("this-morning", time.Date(2026, 10, 26, 18, 0, 0, 0, time.UTC)), // 11:00 local
+		recent("yesterday", time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC)),     // 23:00 local the day before
+	}, now)
+
+	got := o.Board[ColumnDoneToday]
+	if len(got) != 1 || got[0].ID != "this-morning" {
+		t.Errorf("done today = %+v, want only the task finished this local morning", got)
+	}
+}

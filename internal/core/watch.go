@@ -290,6 +290,11 @@ func (a *App) WaitFor(ctx context.Context, ref string, opts WaitOptions) (*WaitR
 	wanted := make(map[EffectiveStatus]bool, len(until))
 	for _, status := range until {
 		wanted[status] = true
+		// A detached task becomes ended once EndGrace passes, so waiting for
+		// detached must not miss a session that has gone for good.
+		if status == EffectiveDetached {
+			wanted[EffectiveEnded] = true
+		}
 	}
 
 	if opts.Timeout > 0 {

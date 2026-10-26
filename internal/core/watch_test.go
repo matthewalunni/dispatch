@@ -386,3 +386,21 @@ func waitForReason(t *testing.T, ctx context.Context, changes <-chan Change, rea
 		}
 	}
 }
+
+func TestWaitUntilDetachedMatchesATaskThatEnded(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	h.endSession(t, result, 2*time.Minute)
+
+	got, err := h.WaitFor(ctx, result.Task.ID, WaitOptions{
+		Until: []EffectiveStatus{EffectiveDetached}, Timeout: time.Second, PollInterval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Matched || got.Task.Effective != EffectiveEnded {
+		t.Errorf("result = matched %v timed out %v effective %q, want an ended task to satisfy detached",
+			got.Matched, got.TimedOut, got.Task.Effective)
+	}
+}
