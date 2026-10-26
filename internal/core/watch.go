@@ -270,7 +270,7 @@ type WaitOptions struct {
 // DefaultWaitStates are the states a caller normally cares about: the agent
 // has stopped producing work and either needs a human or has finished.
 func DefaultWaitStates() []EffectiveStatus {
-	return []EffectiveStatus{EffectiveWaiting, EffectiveIdle, EffectiveDone, EffectiveDetached}
+	return []EffectiveStatus{EffectiveWaiting, EffectiveIdle, EffectiveDone, EffectiveDetached, EffectiveEnded}
 }
 
 // WaitFor blocks until a task reaches one of the requested states.

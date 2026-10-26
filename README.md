@@ -413,6 +413,7 @@ what it is doing. `dispatch ls` shows the combination:
 | `idle` | ready for input |
 | `done` | finished a turn you have not looked at |
 | `detached` | dispatch has the task, but herdr no longer has its session |
+| `ended` | the session closed outside dispatch; it returns to `running` if the agent comes back |
 | `stopped` / `completed` / `failed` | closed out |
 
 `waiting` comes from herdr's own agent-state detection, not from scraping

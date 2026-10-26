@@ -155,6 +155,8 @@ type Herdr struct {
 	StartErr error
 	// PromptErr, when set, fails every PromptAgent call.
 	PromptErr error
+	// ListErr, when set, fails every ListAgents call, as an unreachable herdr would.
+	ListErr error
 	// CreateTabErr, when set, fails every CreateTab call.
 	CreateTabErr error
 
@@ -332,6 +334,9 @@ func (h *Herdr) PromptAgent(_ context.Context, target, text string) error {
 }
 
 func (h *Herdr) ListAgents(context.Context) ([]herdrx.Agent, error) {
+	if h.ListErr != nil {
+		return nil, h.ListErr
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make([]herdrx.Agent, 0, len(h.agents))
@@ -479,6 +484,13 @@ func (h *Herdr) Kill(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.agents, name)
+}
+
+// Revive puts an agent back, as if its session had returned.
+func (h *Herdr) Revive(agent herdrx.Agent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.agents[agent.Name] = agent
 }
 
 // AgentCount reports how many agents are live.

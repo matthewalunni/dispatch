@@ -36,7 +36,8 @@ herdr where a session is still alive:
   waiting    herdr detected an approval or question; the agent needs you
   idle       the agent is ready for input
   done       the agent finished a turn and has not been looked at
-  detached   dispatch has a task but herdr no longer has its session`,
+  detached   dispatch has a task but herdr no longer has its session
+  ended      the session closed outside dispatch`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, err := openApp()
@@ -46,6 +47,9 @@ herdr where a session is still alive:
 			defer app.Close()
 
 			filter := store.Filter{Limit: limit, IncludeTerminal: all}
+			if !all {
+				filter.Statuses = store.ActiveOrEndedFilter().Statuses
+			}
 			if !allProj {
 				rc, err := app.Resolve(dir)
 				if err == nil && rc.Project.Root != "" {
@@ -59,6 +63,7 @@ herdr where a session is still alive:
 				}
 				filter.ParentTaskID = task.ID
 				filter.IncludeTerminal = true
+				filter.Statuses = nil
 				filter.ProjectRoot = ""
 			}
 
@@ -67,6 +72,10 @@ herdr where a session is still alive:
 				return err
 			}
 			views := app.Hydrate(cmd.Context(), tasks)
+			if !all && parent == "" {
+				// Hydrating can end a task that was stored as running.
+				views = core.DropTerminal(views)
+			}
 
 			if attention {
 				var filtered []core.TaskView
@@ -129,7 +138,7 @@ func statusLabel(s core.EffectiveStatus) string {
 		return styleWarn(string(s))
 	case core.EffectiveFailed, core.EffectiveDetached:
 		return styleFail(string(s))
-	case core.EffectiveStopped, core.EffectiveCompleted:
+	case core.EffectiveStopped, core.EffectiveCompleted, core.EffectiveEnded:
 		return styleDim(string(s))
 	default:
 		return string(s)

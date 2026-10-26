@@ -23,11 +23,14 @@ const (
 	StatusCompleted Status = "completed"
 	// StatusFailed means dispatch could not bring the task up.
 	StatusFailed Status = "failed"
+	// StatusEnded means the agent's session ended outside dispatch (closed in
+	// herdr, or the agent exited).
+	StatusEnded Status = "ended"
 )
 
 // Terminal reports whether a status is final.
 func (s Status) Terminal() bool {
-	return s == StatusStopped || s == StatusCompleted || s == StatusFailed
+	return s == StatusStopped || s == StatusCompleted || s == StatusFailed || s == StatusEnded
 }
 
 func (s Status) String() string { return string(s) }

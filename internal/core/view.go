@@ -23,12 +23,18 @@ const (
 	EffectiveIdle      EffectiveStatus = "idle"
 	EffectiveDone      EffectiveStatus = "done"
 	EffectiveDetached  EffectiveStatus = "detached"
+	EffectiveEnded     EffectiveStatus = "ended"
 	EffectiveStopped   EffectiveStatus = "stopped"
 	EffectiveCompleted EffectiveStatus = "completed"
 	EffectiveFailed    EffectiveStatus = "failed"
 	EffectivePending   EffectiveStatus = "pending"
 	EffectiveUnknown   EffectiveStatus = "unknown"
 )
+
+// EndGrace is how long a running task may be missing from herdr before
+// dispatch concludes its session is gone, so a task still being launched is
+// not ended by a race.
+const EndGrace = 60 * time.Second
 
 // NeedsAttention reports statuses a human should look at.
 func (s EffectiveStatus) NeedsAttention() bool { return s == EffectiveWaiting }
@@ -77,8 +83,16 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 		}
 	}
 
+	var changed map[string]store.Status
+	if reachable {
+		changed = a.reconcile(ctx, live)
+	}
+
 	out := make([]TaskView, 0, len(tasks))
 	for _, task := range tasks {
+		if status, ok := changed[task.ID]; ok {
+			task.Status = status
+		}
 		view := TaskView{Task: task, HerdrReachable: reachable}
 		if agent, ok := lookupAgent(live, task); ok {
 			view.AgentAlive = true
@@ -88,6 +102,40 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 		out = append(out, view)
 	}
 	return out
+}
+
+// reconcile brings stored task status in line with what herdr reports, and
+// returns the tasks whose status it changed. It runs only when herdr is
+// reachable, so an outage never ends anything.
+//
+// A running task whose agent is gone past EndGrace becomes ended; an ended
+// task whose agent has returned becomes running again.
+func (a *App) reconcile(ctx context.Context, live map[string]herdrx.Agent) map[string]store.Status {
+	changed := map[string]store.Status{}
+	tasks, err := a.store.List(ctx, store.Filter{Statuses: []store.Status{store.StatusRunning, store.StatusEnded}})
+	if err != nil {
+		return changed
+	}
+	for _, task := range tasks {
+		_, alive := lookupAgent(live, task)
+		switch {
+		case task.Status == store.StatusRunning && !alive && a.now().Sub(task.CreatedAt) > EndGrace:
+			// Reconciliation is best effort: a failure here is retried on the
+			// next hydrate and must never fail the caller.
+			if err := a.store.SetStatus(ctx, task.ID, store.StatusEnded); err != nil {
+				continue
+			}
+			task.Status = store.StatusEnded
+			_ = WriteResult(a.dataDir, task, "session closed outside dispatch")
+			changed[task.ID] = store.StatusEnded
+		case task.Status == store.StatusEnded && alive:
+			if err := a.store.SetStatus(ctx, task.ID, store.StatusRunning); err != nil {
+				continue
+			}
+			changed[task.ID] = store.StatusRunning
+		}
+	}
+	return changed
 }
 
 // HydrateOne is Hydrate for a single task.
@@ -121,6 +169,8 @@ func resolveStatus(task store.Task, view TaskView, herdrReachable bool) Effectiv
 		return EffectiveCompleted
 	case store.StatusFailed:
 		return EffectiveFailed
+	case store.StatusEnded:
+		return EffectiveEnded
 	case store.StatusPending:
 		if !view.AgentAlive {
 			return EffectivePending
@@ -151,11 +201,23 @@ func resolveStatus(task store.Task, view TaskView, herdrReachable bool) Effectiv
 
 // ActiveViews returns live tasks joined with herdr state, newest first.
 func (a *App) ActiveViews(ctx context.Context) ([]TaskView, error) {
-	tasks, err := a.store.List(ctx, store.ActiveFilter())
+	tasks, err := a.store.List(ctx, store.ActiveOrEndedFilter())
 	if err != nil {
 		return nil, err
 	}
-	return a.Hydrate(ctx, tasks), nil
+	return DropTerminal(a.Hydrate(ctx, tasks)), nil
+}
+
+// DropTerminal removes views of tasks that hydration found to be finished.
+// Hydrate can end a task that was listed as active.
+func DropTerminal(views []TaskView) []TaskView {
+	out := views[:0]
+	for _, v := range views {
+		if !v.Task.Status.Terminal() {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // NeedsAttention returns the live tasks whose agents are waiting on a human.

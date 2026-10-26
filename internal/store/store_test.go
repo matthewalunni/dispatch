@@ -388,3 +388,26 @@ func TestLayoutMigrationDefaultsExistingRowsToTab(t *testing.T) {
 		t.Errorf("HerdrLayout = %q, want tab for a pre-existing row", got.HerdrLayout)
 	}
 }
+
+func TestEndedIsTerminalAndCounted(t *testing.T) {
+	if !StatusEnded.Terminal() {
+		t.Error("StatusEnded should be terminal")
+	}
+	s := newStore(t)
+	seedTask(t, s, "task_1", "a", func(task *Task) { task.Status = StatusEnded })
+
+	counts, err := s.Count(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Ended != 1 || counts.Active != 0 || counts.Total != 1 {
+		t.Errorf("counts = %+v", counts)
+	}
+	active, err := s.List(context.Background(), ActiveFilter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(active) != 0 {
+		t.Errorf("ActiveFilter listed an ended task: %+v", active)
+	}
+}

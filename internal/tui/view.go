@@ -341,7 +341,7 @@ func statusStyle(status core.EffectiveStatus) lipgloss.Style {
 		return warnStyle
 	case core.EffectiveDetached, core.EffectiveFailed:
 		return failStyle
-	case core.EffectiveStopped, core.EffectiveCompleted:
+	case core.EffectiveStopped, core.EffectiveCompleted, core.EffectiveEnded:
 		return faintStyle
 	default:
 		return dimStyle

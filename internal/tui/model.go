@@ -217,20 +217,23 @@ func (m *model) loadCmd() tea.Cmd {
 		case scopeRecent:
 			filter = store.Filter{IncludeTerminal: true, Limit: 50}
 		default:
-			filter = store.ActiveFilter()
+			filter = store.ActiveOrEndedFilter()
 		}
 		tasks, err := app.Tasks(ctx, filter)
 		if err != nil {
 			return loadedMsg{ctx: rc, err: err}
 		}
 		views := app.Hydrate(ctx, tasks)
+		if scope != scopeRecent {
+			views = core.DropTerminal(views)
+		}
 
 		// Attention count always reflects live tasks, whatever is on screen.
 		active := views
 		if scope == scopeRecent {
-			live, err := app.Tasks(ctx, store.ActiveFilter())
+			live, err := app.Tasks(ctx, store.ActiveOrEndedFilter())
 			if err == nil {
-				active = app.Hydrate(ctx, live)
+				active = core.DropTerminal(app.Hydrate(ctx, live))
 			}
 		}
 		attention := 0
