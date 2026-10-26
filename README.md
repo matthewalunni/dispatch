@@ -439,6 +439,7 @@ deliver` until the agent can take it.
 | `x` | stop the selected task |
 | `p` | all projects / this project |
 | `j` `k` `↑` `↓` | move |
+| `h` `l` `←` `→` | Board: previous / next column |
 | `r` | refresh |
 | `q` `esc` | back, or quit from the tabs |
 | `?` | help |

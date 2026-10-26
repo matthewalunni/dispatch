@@ -28,7 +28,14 @@ const (
 // is still there so a live update never moves the selection underfoot.
 func (m *model) setOverview(o *core.Overview) {
 	before, had := m.selectedItem()
+	boardBefore, boardHad := m.boardSelected()
 	m.overview = o
+	defer func() {
+		if boardHad {
+			m.followBoardCard(boardBefore.ID)
+		}
+		m.clampBoard()
+	}()
 	items := m.inboxItems()
 	// An answer that has since been delivered leaves the inbox; forget why it
 	// was waiting.
@@ -431,4 +438,17 @@ func (m *model) contentWidth() int {
 		return 100
 	}
 	return maxInt(60, minInt(m.width-2, 140))
+}
+
+// followBoardCard keeps the board cursor on the same task after a reload
+// moved it between columns.
+func (m *model) followBoardCard(id string) {
+	for _, c := range boardColumns {
+		for row, v := range m.boardCards(c) {
+			if v.ID == id {
+				m.boardCol, m.boardRow = c, row
+				return
+			}
+		}
+	}
 }

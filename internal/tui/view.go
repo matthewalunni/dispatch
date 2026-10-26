@@ -38,7 +38,7 @@ func (m *model) View() string {
 func (m *model) viewTab() string {
 	switch m.tab {
 	case tabBoard:
-		return "\n  " + dimStyle.Render("the board is coming; the Inbox has everything that needs you") + "\n"
+		return m.viewBoard()
 	case tabRecent:
 		return m.viewTasks()
 	case tabRoles:
@@ -137,6 +137,8 @@ func (m *model) tabKeys() string {
 			return "enter send · esc cancel"
 		}
 		return "j/k move · a/b choose · m reply · d chore done · enter more · o open · x stop · " + shared
+	case tabBoard:
+		return "h/l column · j/k card · enter details · o open · x stop · " + shared
 	case tabRecent:
 		return "↑/↓ move · enter details · o open session · x stop · " + shared
 	case tabRoles:
@@ -316,7 +318,7 @@ func (m *model) viewHelp() string {
 		"  o          open the agent's herdr session in this terminal",
 		"  x          stop the selected task's agent",
 		"  p          all projects / this project",
-		"  j k ↑ ↓    move",
+		"  j k ↑ ↓    move (on the Board h l ← → change column)",
 		"  r          refresh",
 		"  q esc      back, or quit from the tabs",
 		"  ctrl+c     quit",

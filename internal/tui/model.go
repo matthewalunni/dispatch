@@ -79,6 +79,10 @@ type model struct {
 	// as long as the ask stays answered.
 	pending map[string]string
 
+	// Board cursor: the column and the card within it.
+	boardCol core.Column
+	boardRow int
+
 	// Recent list
 	views      []core.TaskView
 	taskCursor int
@@ -153,6 +157,7 @@ func newModel(app *core.App, version string) *model {
 		version:     version,
 		screen:      screenMain,
 		tab:         tabInbox,
+		boardCol:    core.ColumnNeedsYou,
 		allProjects: true,
 		form:        form{input: input},
 		reply:       reply,
@@ -512,12 +517,15 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 	case "p":
 		m.allProjects = !m.allProjects
 		m.inboxCursor, m.taskCursor = 0, 0
+		m.boardCol, m.boardRow = core.ColumnNeedsYou, 0
 		return m, m.loadCmd()
 	}
 
 	switch m.tab {
 	case tabInbox:
 		return m.handleInboxKey(key)
+	case tabBoard:
+		return m.handleBoardKey(key)
 	case tabRecent:
 		return m.handleTasksKey(key)
 	case tabRoles:
@@ -643,7 +651,12 @@ func (m *model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ------------------------------------------------------------------ helpers
 
+// selected is the task the detail screen, open and stop act on: the board's
+// card on the Board, the Recent list's row otherwise.
 func (m *model) selected() (core.TaskView, bool) {
+	if m.tab == tabBoard {
+		return m.boardSelected()
+	}
 	if m.taskCursor < 0 || m.taskCursor >= len(m.views) {
 		return core.TaskView{}, false
 	}
