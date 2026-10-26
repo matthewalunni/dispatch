@@ -48,9 +48,6 @@ herdr where a session is still alive:
 			defer app.Close()
 
 			filter := store.Filter{Limit: limit, IncludeTerminal: all}
-			if !all {
-				filter.Statuses = store.ActiveOrEndedFilter().Statuses
-			}
 			if !allProj {
 				rc, err := app.Resolve(dir)
 				if err == nil && rc.Project.Root != "" {
@@ -68,14 +65,19 @@ herdr where a session is still alive:
 				filter.ProjectRoot = ""
 			}
 
-			tasks, err := app.Tasks(cmd.Context(), filter)
+			var views []core.TaskView
+			if !all && parent == "" {
+				// Live tasks only, with --limit counting the ones still live
+				// once hydrating has ended or revived what it needs to.
+				views, err = app.LiveViews(cmd.Context(), filter)
+			} else {
+				var tasks []store.Task
+				if tasks, err = app.Tasks(cmd.Context(), filter); err == nil {
+					views = app.Hydrate(cmd.Context(), tasks)
+				}
+			}
 			if err != nil {
 				return err
-			}
-			views := app.Hydrate(cmd.Context(), tasks)
-			if !all && parent == "" {
-				// Hydrating can end a task that was stored as running.
-				views = core.DropTerminal(views)
 			}
 
 			if attention {

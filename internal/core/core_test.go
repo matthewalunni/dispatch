@@ -1211,3 +1211,25 @@ func TestHydrateDoesNotReviveAnEndedTaskOverAnotherTasksAgent(t *testing.T) {
 		t.Errorf("old task status = %q, want ended while %s owns the agent", task.Status, fresh.Task.ID)
 	}
 }
+
+func TestLiveViewsLimitCountsOnlyLiveTasks(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	live := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Still going"})
+	for _, title := range []string{"Gone one", "Gone two"} {
+		gone := h.dispatch(t, DispatchRequest{Role: "engineer", Title: title})
+		h.Herdr.Kill(gone.Task.HerdrAgent)
+	}
+	h.now = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) }
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	views, err := h.LiveViews(ctx, store.Filter{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].ID != live.Task.ID {
+		t.Errorf("LiveViews(limit 1) = %d views, want the one live task despite newer ended ones", len(views))
+	}
+}

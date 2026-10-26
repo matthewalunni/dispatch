@@ -262,11 +262,26 @@ func resolveStatus(task store.Task, view TaskView, herdrReachable bool) Effectiv
 
 // ActiveViews returns live tasks joined with herdr state, newest first.
 func (a *App) ActiveViews(ctx context.Context) ([]TaskView, error) {
-	tasks, err := a.store.List(ctx, store.ActiveOrEndedFilter())
+	return a.LiveViews(ctx, store.Filter{})
+}
+
+// LiveViews is ActiveViews narrowed by f's project, parent and limit; its
+// statuses are ignored. Ended tasks are listed too, since hydrating may
+// revive one, so the limit is applied only once the finished ones are gone.
+func (a *App) LiveViews(ctx context.Context, f store.Filter) ([]TaskView, error) {
+	f.Statuses = store.ActiveOrEndedFilter().Statuses
+	f.IncludeTerminal = false
+	limit := f.Limit
+	f.Limit = 0
+	tasks, err := a.store.List(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	return DropTerminal(a.Hydrate(ctx, tasks)), nil
+	views := DropTerminal(a.Hydrate(ctx, tasks))
+	if limit > 0 && len(views) > limit {
+		views = views[:limit]
+	}
+	return views, nil
 }
 
 // DropTerminal removes views of tasks that hydration found to be finished.
