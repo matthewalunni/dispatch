@@ -65,6 +65,10 @@ type taskJSON struct {
 	PromptPath   string `json:"prompt_path,omitempty"`
 	SessionDir   string `json:"session_dir,omitempty"`
 
+	DoingNow string `json:"doing_now,omitempty"`
+	Progress string `json:"progress,omitempty"`
+	OpenAsks int    `json:"open_asks,omitempty"`
+
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 	CompletedAt string `json:"completed_at,omitempty"`
@@ -104,6 +108,13 @@ func toJSON(view core.TaskView, dataDir string) taskJSON {
 		out.PromptPath = core.PromptPath(dataDir, view.ID)
 		out.SessionDir = core.SessionDir(dataDir, view.ID)
 	}
+	if r := view.Report; r != nil {
+		out.DoingNow = r.Line
+		if r.Total > 0 {
+			out.Progress = fmt.Sprintf("%d/%d", r.Done, r.Total)
+		}
+	}
+	out.OpenAsks = len(view.OpenAsks)
 	if view.CompletedAt != nil {
 		out.CompletedAt = view.CompletedAt.Format("2006-01-02T15:04:05Z07:00")
 	}

@@ -23,12 +23,18 @@ const (
 	EffectiveIdle      EffectiveStatus = "idle"
 	EffectiveDone      EffectiveStatus = "done"
 	EffectiveDetached  EffectiveStatus = "detached"
+	EffectiveEnded     EffectiveStatus = "ended"
 	EffectiveStopped   EffectiveStatus = "stopped"
 	EffectiveCompleted EffectiveStatus = "completed"
 	EffectiveFailed    EffectiveStatus = "failed"
 	EffectivePending   EffectiveStatus = "pending"
 	EffectiveUnknown   EffectiveStatus = "unknown"
 )
+
+// EndGrace is how long a running task may be missing from herdr before
+// dispatch concludes its session is gone, so a task still being launched is
+// not ended by a race.
+const EndGrace = 60 * time.Second
 
 // NeedsAttention reports statuses a human should look at.
 func (s EffectiveStatus) NeedsAttention() bool { return s == EffectiveWaiting }
@@ -53,6 +59,10 @@ type TaskView struct {
 	Effective EffectiveStatus `json:"effective_status"`
 	// HerdrReachable reports whether live state could be read at all.
 	HerdrReachable bool `json:"herdr_reachable"`
+	// Report is the agent's latest self-reported status, if it has sent one.
+	Report *store.Report `json:"report,omitempty"`
+	// OpenAsks are the task's asks that are open or answered but undelivered.
+	OpenAsks []store.Ask `json:"open_asks,omitempty"`
 }
 
 // Age renders the task's age relative to now.
@@ -77,9 +87,34 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 		}
 	}
 
+	var changed map[string]store.Status
+	if reachable {
+		changed = a.reconcile(ctx, live)
+		a.deliverPending(ctx, live)
+	}
+
+	ids := make([]string, len(tasks))
+	for i, task := range tasks {
+		ids[i] = task.ID
+	}
+	reports, _ := a.store.Reports(ctx, ids)
+	openAsks := map[string][]store.Ask{}
+	if len(ids) > 0 {
+		asks, _ := a.store.ListAsks(ctx, store.AskFilter{TaskIDs: ids, States: []store.AskState{store.AskOpen, store.AskAnswered}})
+		for _, ask := range asks {
+			openAsks[ask.TaskID] = append(openAsks[ask.TaskID], ask)
+		}
+	}
+
 	out := make([]TaskView, 0, len(tasks))
 	for _, task := range tasks {
-		view := TaskView{Task: task, HerdrReachable: reachable}
+		if status, ok := changed[task.ID]; ok {
+			task.Status = status
+		}
+		view := TaskView{Task: task, HerdrReachable: reachable, OpenAsks: openAsks[task.ID]}
+		if r, ok := reports[task.ID]; ok {
+			view.Report = &r
+		}
 		if agent, ok := lookupAgent(live, task); ok {
 			view.AgentAlive = true
 			view.AgentStatus = agent.Status
@@ -88,6 +123,80 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 		out = append(out, view)
 	}
 	return out
+}
+
+// reconcile brings stored task status in line with what herdr reports, and
+// returns the tasks whose status it changed. It runs only when herdr is
+// reachable, so an outage never ends anything.
+//
+// A running task whose agent is gone past EndGrace becomes ended; an ended
+// task whose own agent has returned becomes running again. Agent names and
+// pane ids can be reused, so an ended task is revived only on an exact match
+// and never onto an agent a live task already claims.
+func (a *App) reconcile(ctx context.Context, live map[string]herdrx.Agent) map[string]store.Status {
+	changed := map[string]store.Status{}
+	tasks, err := a.store.List(ctx, store.ActiveOrEndedFilter())
+	if err != nil {
+		return changed
+	}
+	for i, task := range tasks {
+		if task.Status != store.StatusRunning {
+			continue
+		}
+		if _, alive := lookupAgent(live, task); alive || a.now().Sub(task.CreatedAt) <= EndGrace {
+			continue
+		}
+		// Reconciliation is best effort: a failure here is retried on the
+		// next hydrate and must never fail the caller.
+		if err := a.store.SetStatus(ctx, task.ID, store.StatusEnded); err != nil {
+			continue
+		}
+		tasks[i].Status = store.StatusEnded
+		_ = WriteResult(a.dataDir, tasks[i], "session closed outside dispatch")
+		changed[task.ID] = store.StatusEnded
+	}
+
+	claimed := map[string]bool{}
+	claim := func(task store.Task) {
+		if task.HerdrAgent != "" {
+			claimed[task.HerdrAgent] = true
+		}
+		if task.HerdrPaneID != "" {
+			claimed[task.HerdrPaneID] = true
+		}
+	}
+	for _, task := range tasks {
+		if !task.Status.Terminal() {
+			claim(task)
+		}
+	}
+	// Newest first, so if several ended tasks match one agent the most
+	// recent is the one revived.
+	for _, task := range tasks {
+		if task.Status != store.StatusEnded || claimed[task.HerdrAgent] || claimed[task.HerdrPaneID] {
+			continue
+		}
+		if !ownAgentAlive(live, task) {
+			continue
+		}
+		if err := a.store.SetStatus(ctx, task.ID, store.StatusRunning); err != nil {
+			continue
+		}
+		claim(task)
+		changed[task.ID] = store.StatusRunning
+	}
+	return changed
+}
+
+// ownAgentAlive reports whether herdr has the task's agent back: when both a
+// name and a pane id are stored, both must match the same live agent.
+func ownAgentAlive(live map[string]herdrx.Agent, task store.Task) bool {
+	if task.HerdrAgent != "" && task.HerdrPaneID != "" {
+		agent, ok := live[task.HerdrAgent]
+		return ok && agent.Name == task.HerdrAgent && agent.PaneID == task.HerdrPaneID
+	}
+	_, ok := lookupAgent(live, task)
+	return ok
 }
 
 // HydrateOne is Hydrate for a single task.
@@ -121,6 +230,8 @@ func resolveStatus(task store.Task, view TaskView, herdrReachable bool) Effectiv
 		return EffectiveCompleted
 	case store.StatusFailed:
 		return EffectiveFailed
+	case store.StatusEnded:
+		return EffectiveEnded
 	case store.StatusPending:
 		if !view.AgentAlive {
 			return EffectivePending
@@ -151,11 +262,38 @@ func resolveStatus(task store.Task, view TaskView, herdrReachable bool) Effectiv
 
 // ActiveViews returns live tasks joined with herdr state, newest first.
 func (a *App) ActiveViews(ctx context.Context) ([]TaskView, error) {
-	tasks, err := a.store.List(ctx, store.ActiveFilter())
+	return a.LiveViews(ctx, store.Filter{})
+}
+
+// LiveViews is ActiveViews narrowed by f's project, parent and limit; its
+// statuses are ignored. Ended tasks are listed too, since hydrating may
+// revive one, so the limit is applied only once the finished ones are gone.
+func (a *App) LiveViews(ctx context.Context, f store.Filter) ([]TaskView, error) {
+	f.Statuses = store.ActiveOrEndedFilter().Statuses
+	f.IncludeTerminal = false
+	limit := f.Limit
+	f.Limit = 0
+	tasks, err := a.store.List(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	return a.Hydrate(ctx, tasks), nil
+	views := DropTerminal(a.Hydrate(ctx, tasks))
+	if limit > 0 && len(views) > limit {
+		views = views[:limit]
+	}
+	return views, nil
+}
+
+// DropTerminal removes views of tasks that hydration found to be finished.
+// Hydrate can end a task that was listed as active.
+func DropTerminal(views []TaskView) []TaskView {
+	out := views[:0]
+	for _, v := range views {
+		if !v.Task.Status.Terminal() {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // NeedsAttention returns the live tasks whose agents are waiting on a human.

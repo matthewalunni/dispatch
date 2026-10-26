@@ -1,0 +1,380 @@
+package tui
+
+import (
+	"errors"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
+	"github.com/matthewalunni/dispatch/internal/core"
+	"github.com/matthewalunni/dispatch/internal/herdrx"
+	"github.com/matthewalunni/dispatch/internal/store"
+)
+
+func TestMain(m *testing.M) {
+	// Plain text, so assertions match what a reader sees.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	os.Exit(m.Run())
+}
+
+func task(id, role, project, title string) core.TaskView {
+	return core.TaskView{Task: store.Task{
+		ID: id, Role: role, ProjectName: project, Title: title,
+		CreatedAt: time.Now().Add(-time.Hour),
+	}}
+}
+
+func decisionAsk() *store.Ask {
+	return &store.Ask{
+		ID: "ask-1", TaskID: "t1", Kind: store.AskDecision,
+		Title: "How should Search Ads get the new screenshots?",
+		Body:  "The full reasoning lives here.",
+		Options: []store.AskOption{
+			{Label: "Custom Product Page", Detail: "faster · short review"},
+			{Label: "Ship with 1.0.2", Detail: "changes the main listing"},
+		},
+		Recommended: 0,
+		State:       store.AskOpen,
+		CreatedAt:   time.Now().Add(-12 * time.Minute),
+	}
+}
+
+func choreAsk() *store.Ask {
+	return &store.Ask{
+		ID: "ask-2", TaskID: "t1", Kind: store.AskChore,
+		Title:       "Set up Search Ads account + billing",
+		Items:       []string{"Create account", "Add a card"},
+		Blocks:      "campaign setup",
+		Recommended: -1,
+		State:       store.AskOpen,
+		CreatedAt:   time.Now().Add(-12 * time.Minute),
+	}
+}
+
+func testModel(o *core.Overview) *model {
+	m := newModel(nil, "test")
+	m.width, m.height = 110, 40
+	m.overview = o
+	m.loading = false
+	return m
+}
+
+func key(s string) tea.KeyMsg {
+	switch s {
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
+func assertContains(t *testing.T, out string, wants ...string) {
+	t.Helper()
+	for _, want := range wants {
+		if !strings.Contains(out, want) {
+			t.Errorf("output is missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestInboxRendersADecisionWithItsRecommendation(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox:    []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+		NeedsYou: 1,
+	})
+	out := m.viewInbox(0)
+	assertContains(t, out,
+		"How should Search Ads get the new screenshots?",
+		"a  ★ Custom Product Page",
+		"b  Ship with 1.0.2",
+		"growth", "RepClock",
+		"faster · short review",
+	)
+	if strings.Contains(out, "The full reasoning lives here.") {
+		t.Errorf("body should stay hidden until enter:\n%s", out)
+	}
+
+	m.handleKey(key("enter"))
+	assertContains(t, m.viewInbox(0), "The full reasoning lives here.")
+}
+
+func TestInboxRendersAChoreChecklist(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: choreAsk()}},
+	})
+	assertContains(t, m.viewInbox(0), "CHORE", "Set up Search Ads account + billing",
+		"☐ Create account", "☐ Add a card", "blocks: campaign setup")
+}
+
+func TestInboxFallbackCardShowsScreenTail(t *testing.T) {
+	v := task("t2", "engineer", "ReadFlow", "Offline sync")
+	v.AgentStatus = herdrx.StatusBlocked
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: v, Screen: "line one\nline two\nline three\nDo you want to proceed? (y/n)\n"}},
+	})
+	out := m.viewInbox(0)
+	assertContains(t, out, "BLOCKED", "Offline sync", "engineer", "ReadFlow", "Do you want to proceed? (y/n)")
+	if strings.Contains(out, "line one") {
+		t.Errorf("collapsed card should show only the tail:\n%s", out)
+	}
+	m.handleKey(key("enter"))
+	assertContains(t, m.viewInbox(0), "line one")
+}
+
+func TestInboxShowsTheQuietWorkingList(t *testing.T) {
+	busy := task("t3", "engineer", "ReadFlow", "Offline sync")
+	busy.AgentStatus = herdrx.StatusWorking
+	busy.Report = &store.Report{Line: "adding offline sync tests", Done: 2, Total: 3}
+	quiet := task("t4", "designer", "RepClock", "Onboarding variants")
+	quiet.AgentStatus = herdrx.StatusIdle
+	m := testModel(&core.Overview{Working: []core.TaskView{busy, quiet}, WorkingCount: 1})
+	assertContains(t, m.viewInbox(0), "nothing needs you", "WORKING",
+		"adding offline sync tests · 2 of 3", "Onboarding variants")
+}
+
+func TestOptionKeyMapsToIndex(t *testing.T) {
+	cases := []struct {
+		key   string
+		count int
+		want  int
+	}{
+		{"a", 2, 0},
+		{"b", 2, 1},
+		{"c", 2, -1},
+		{"z", 2, -1},
+		{"B", 2, -1},
+		{"ab", 2, -1},
+	}
+	for _, tc := range cases {
+		if got := optionIndex(tc.key, tc.count); got != tc.want {
+			t.Errorf("optionIndex(%q, %d) = %d, want %d", tc.key, tc.count, got, tc.want)
+		}
+	}
+}
+
+func TestInboxKeysBuildAnswers(t *testing.T) {
+	decision := core.InboxItem{Ask: decisionAsk()}
+	if ans, ok := inboxAnswer(decision, "b"); !ok || ans.Option != 1 || ans.ChoreDone {
+		t.Errorf("b on a decision = %+v, %v", ans, ok)
+	}
+	if _, ok := inboxAnswer(decision, "d"); ok {
+		t.Error("d is not an option of a two-option decision")
+	}
+	chore := core.InboxItem{Ask: choreAsk()}
+	if ans, ok := inboxAnswer(chore, "d"); !ok || !ans.ChoreDone || ans.Option != -1 {
+		t.Errorf("d on a chore = %+v, %v", ans, ok)
+	}
+	if _, ok := inboxAnswer(chore, "a"); ok {
+		t.Error("a chore has no options")
+	}
+	if _, ok := inboxAnswer(core.InboxItem{}, "a"); ok {
+		t.Error("a fallback card has nothing to answer")
+	}
+	answered := decisionAsk()
+	answered.State = store.AskAnswered
+	if _, ok := inboxAnswer(core.InboxItem{Ask: answered}, "a"); ok {
+		t.Error("an answered ask cannot be answered again")
+	}
+}
+
+func TestTabKeysSwitchTabs(t *testing.T) {
+	m := testModel(&core.Overview{})
+	if m.tab != tabInbox {
+		t.Fatalf("initial tab = %v, want Inbox", m.tab)
+	}
+	for k, want := range map[string]tab{"2": tabBoard, "3": tabRecent, "4": tabRoles, "1": tabInbox} {
+		m.handleKey(key(k))
+		if m.tab != want {
+			t.Errorf("after %q tab = %v, want %v", k, m.tab, want)
+		}
+	}
+	m.tab = tabInbox
+	for _, want := range []tab{tabBoard, tabRecent, tabRoles, tabInbox} {
+		m.handleKey(key("tab"))
+		if m.tab != want {
+			t.Errorf("tab cycled to %v, want %v", m.tab, want)
+		}
+	}
+}
+
+func TestTabBarMarksTheActiveTabAndCounts(t *testing.T) {
+	bar := renderTabBar(tabBoard, 2, 3, "all projects")
+	assertContains(t, bar, "Dispatch", "all projects", "1 Inbox", "[2 Board]", "3 Recent", "4 Roles",
+		"● 2 need you", "● 3 working")
+	if strings.Contains(bar, "[1 Inbox]") {
+		t.Errorf("only the active tab is bracketed: %s", bar)
+	}
+}
+
+func TestPendingDeliveryIsLabelled(t *testing.T) {
+	ask := decisionAsk()
+	ask.State = store.AskAnswered
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: ask}},
+	})
+	assertContains(t, m.viewInbox(0), "answered · waiting to deliver")
+}
+
+func TestAnswerResultBanner(t *testing.T) {
+	m := testModel(&core.Overview{})
+	m.Update(answeredMsg{askID: "ask-1", result: &core.AnswerResult{Delivered: true}})
+	if m.status != "answered · delivered" {
+		t.Errorf("status = %q", m.status)
+	}
+	m.Update(answeredMsg{askID: "ask-1", result: &core.AnswerResult{Reason: "agent is busy"}})
+	if m.status != "answered · waiting to deliver (agent is busy)" {
+		t.Errorf("status = %q", m.status)
+	}
+
+	ask := decisionAsk()
+	ask.State = store.AskAnswered
+	m.overview = &core.Overview{Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "x"), Ask: ask}}}
+	assertContains(t, m.viewInbox(0), "answered · waiting to deliver (agent is busy)")
+
+	m.Update(answeredMsg{askID: "ask-1", err: errors.New("ask ask-1 is answered and cannot be answered")})
+	if m.err == nil {
+		t.Error("an answer error should surface as the error banner")
+	}
+}
+
+func TestReplySendsANote(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	if !m.replying {
+		t.Fatal("m should open the reply input")
+	}
+	for _, r := range "use the page" {
+		m.handleKey(key(string(r)))
+	}
+	if m.tab != tabInbox {
+		t.Fatal("typing a reply must not switch tabs")
+	}
+	_, cmd := m.handleKey(key("enter"))
+	if m.replying || cmd == nil {
+		t.Fatalf("enter should send the reply (replying=%v, cmd=%v)", m.replying, cmd != nil)
+	}
+	if !m.inFlight["ask-1"] {
+		t.Error("the ask should be marked in flight")
+	}
+}
+
+func TestReplyStaysWithItsAskAcrossReloads(t *testing.T) {
+	other := decisionAsk()
+	other.ID = "ask-B"
+	other.Title = "A different decision"
+	m := testModel(nil)
+	m.setOverview(&core.Overview{Inbox: []core.InboxItem{
+		{Task: task("t1", "growth", "RepClock", "x"), Ask: decisionAsk()},
+		{Task: task("t2", "engineer", "ReadFlow", "y"), Ask: other},
+	}})
+	m.handleKey(key("m"))
+	for _, r := range "use the page" {
+		m.handleKey(key(string(r)))
+	}
+
+	// ask-1 is answered elsewhere and leaves the inbox; the cursor's index now
+	// points at ask-B.
+	m.setOverview(&core.Overview{Inbox: []core.InboxItem{
+		{Task: task("t2", "engineer", "ReadFlow", "y"), Ask: other},
+	}})
+	if m.replying {
+		t.Fatal("the reply should be cancelled once its ask is gone")
+	}
+	if !strings.Contains(m.status, "reply cancelled") {
+		t.Errorf("status = %q, want a cancellation notice", m.status)
+	}
+	m.handleKey(key("enter"))
+	if m.inFlight["ask-B"] || m.inFlight["ask-1"] {
+		t.Errorf("no answer should be sent, in flight = %v", m.inFlight)
+	}
+}
+
+func TestLoadsAreSingleFlight(t *testing.T) {
+	m := testModel(&core.Overview{})
+	if m.loadCmd() == nil {
+		t.Fatal("first load should start")
+	}
+	if m.loadCmd() != nil {
+		t.Error("a second load while one is in flight should wait, not run alongside")
+	}
+	_, cmd := m.Update(loadedMsg{overview: &core.Overview{}})
+	if cmd == nil {
+		t.Fatal("a change during the load should trigger one follow-up load")
+	}
+	_, cmd = m.Update(loadedMsg{overview: &core.Overview{}})
+	if cmd != nil {
+		t.Error("with nothing new since, the load should not repeat")
+	}
+}
+
+func TestReplyKeepsSpacesWhileAnErrorShows(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	m.err = errors.New("an earlier answer failed")
+	for _, k := range []tea.KeyMsg{key("u"), {Type: tea.KeySpace, Runes: []rune(" ")}, key("p")} {
+		m.handleKey(k)
+	}
+	if got := m.reply.Value(); got != "u p" {
+		t.Errorf("reply = %q, want the space kept while an error shows", got)
+	}
+	if !m.replying {
+		t.Error("typing must keep the reply open")
+	}
+}
+
+func TestReplyCanCarryAnOption(t *testing.T) {
+	m := testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	if m.replyOption != -1 {
+		t.Fatalf("a reply starts with no option, got %d", m.replyOption)
+	}
+	m.handleKey(key("tab"))
+	m.handleKey(key("tab"))
+	if m.replyOption != 1 {
+		t.Fatalf("tab twice should select option b, got %d", m.replyOption)
+	}
+	assertContains(t, m.viewInbox(0), "with b")
+	for _, r := range "but keep it short" {
+		m.handleKey(key(string(r)))
+	}
+	if got := m.reply.Value(); got != "but keep it short" {
+		t.Errorf("reply = %q", got)
+	}
+	if askID, ans, ok := m.replyAnswer(); !ok || askID != "ask-1" || ans.Option != 1 || ans.Note != "but keep it short" {
+		t.Errorf("reply answer = %q %+v %v, want option b with the note", askID, ans, ok)
+	}
+	_, cmd := m.handleKey(key("enter"))
+	if cmd == nil || !m.inFlight["ask-1"] {
+		t.Fatal("enter should send the reply")
+	}
+
+	// A third tab wraps back to no option, so a reply can still go alone.
+	m = testModel(&core.Overview{
+		Inbox: []core.InboxItem{{Task: task("t1", "growth", "RepClock", "Launch ads"), Ask: decisionAsk()}},
+	})
+	m.handleKey(key("m"))
+	for i := 0; i < 3; i++ {
+		m.handleKey(key("tab"))
+	}
+	if m.replyOption != -1 {
+		t.Errorf("tab should wrap back to no option, got %d", m.replyOption)
+	}
+}
+
+func TestHelpListsTheEndedStatus(t *testing.T) {
+	assertContains(t, testModel(&core.Overview{}).viewHelp(), "ended")
+}

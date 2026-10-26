@@ -158,3 +158,33 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
+
+func TestTaskJSONIncludesAskCountAndReport(t *testing.T) {
+	view := sampleView()
+	view.Report = &store.Report{Line: "wiring the endpoint", Done: 2, Total: 3}
+	view.OpenAsks = []store.Ask{{ID: "a1"}, {ID: "a2"}}
+	data, _ := json.Marshal(toJSON(view, ""))
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["doing_now"] != "wiring the endpoint" || got["progress"] != "2/3" || got["open_asks"] != float64(2) {
+		t.Errorf("got doing_now=%v progress=%v open_asks=%v", got["doing_now"], got["progress"], got["open_asks"])
+	}
+
+	data, _ = json.Marshal(toJSON(sampleView(), ""))
+	got = nil
+	json.Unmarshal(data, &got)
+	for _, k := range []string{"doing_now", "progress", "open_asks"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s should be omitted when empty", k)
+		}
+	}
+}
+
+func TestWaitAcceptsEnded(t *testing.T) {
+	states, err := parseStates([]string{"ended"})
+	if err != nil || len(states) != 1 || states[0] != core.EffectiveEnded {
+		t.Errorf("parseStates(ended) = %v, %v", states, err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/matthewalunni/dispatch/internal/gitx"
 	"github.com/matthewalunni/dispatch/internal/herdrx"
@@ -155,6 +156,18 @@ type Herdr struct {
 	StartErr error
 	// PromptErr, when set, fails every PromptAgent call.
 	PromptErr error
+	// PromptErrFor fails PromptAgent for the named targets only, so one agent
+	// can reject a prompt while the others accept it.
+	PromptErrFor map[string]error
+	// PromptDelay holds each PromptAgent call open, so concurrent callers
+	// overlap the way a slow herdr would make them.
+	PromptDelay time.Duration
+	// Screens maps an agent name to what ReadAgent returns for it.
+	Screens map[string]string
+	// ReadErr, when set, fails every ReadAgent call.
+	ReadErr error
+	// ListErr, when set, fails every ListAgents call, as an unreachable herdr would.
+	ListErr error
 	// CreateTabErr, when set, fails every CreateTab call.
 	CreateTabErr error
 
@@ -325,13 +338,29 @@ func (h *Herdr) PromptAgent(_ context.Context, target, text string) error {
 	if h.PromptErr != nil {
 		return h.PromptErr
 	}
+	time.Sleep(h.PromptDelay)
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.PromptErrFor[target]; err != nil {
+		return err
+	}
 	h.Prompts = append(h.Prompts, Prompt{Target: target, Text: text})
 	return nil
 }
 
+func (h *Herdr) ReadAgent(_ context.Context, target string, _ int) (string, error) {
+	if h.ReadErr != nil {
+		return "", h.ReadErr
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Screens[target], nil
+}
+
 func (h *Herdr) ListAgents(context.Context) ([]herdrx.Agent, error) {
+	if h.ListErr != nil {
+		return nil, h.ListErr
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	out := make([]herdrx.Agent, 0, len(h.agents))
@@ -479,6 +508,13 @@ func (h *Herdr) Kill(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	delete(h.agents, name)
+}
+
+// Revive puts an agent back, as if its session had returned.
+func (h *Herdr) Revive(agent herdrx.Agent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.agents[agent.Name] = agent
 }
 
 // AgentCount reports how many agents are live.

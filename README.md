@@ -268,6 +268,8 @@ Resolution runs global defaults → global config → project overrides → task
 | `dispatch show <task>` | everything about a task (`--prompt` for what was sent) |
 | `dispatch stop <task>` | end the agent session |
 | `dispatch done <task>` | mark complete, leaving the session running |
+| `dispatch status "<doing now>"` | an agent reports what it is doing (`--progress 2/3`) |
+| `dispatch ask decision` / `ask chore` / `ask withdraw` | an agent files something it needs from you |
 | `dispatch roles` / `roles show` / `roles schema` | role discovery |
 | `dispatch role init <name>` | generate a starter role file |
 | `dispatch doctor` | diagnose the environment |
@@ -301,6 +303,21 @@ dispatch run --role engineer --task "Implement feature X" --json
 
 `status` is the resolved state a human would read; `dispatch_status` and
 `agent_status` expose dispatch's and herdr's views separately when you need them.
+
+Agents report back from inside their own session, where dispatch exports
+`DISPATCH_TASK_ID` (override with `--task <ref>`):
+
+```sh
+dispatch status "wiring the endpoint" --progress 2/3
+dispatch ask decision "How should we ship the page?" \
+  --option "Custom Product Page | faster, no new build" \
+  --option "Ship with 1.0.2" --recommend 1
+dispatch ask chore "Add the App Store key" --item "Create the key" --blocks "TestFlight upload"
+```
+
+`--recommend` is 1-based. `--body` or `--body-file <path|->` adds a longer
+explanation. In `ls --json`, a task with a status or open asks also carries
+`doing_now`, `progress` and `open_asks`.
 
 ### Parent and child tasks
 
@@ -354,6 +371,16 @@ dispatch wait <child> --until waiting,done --timeout 20m
 dispatch ls --parent "$DISPATCH_TASK_ID"
 ```
 
+Children's asks go to your human's inbox, not to the orchestrator. The
+orchestrator lists them with `dispatch ls --parent "$DISPATCH_TASK_ID"` and
+keeps coordinating unblocked work.
+
+The shipped role is only seeded when the file is missing, so an existing
+`~/.config/dispatch/roles/orchestrator.yaml` is never overwritten. To pick up
+new orchestrator text, delete that file; the next dispatch command re-seeds it.
+(`dispatch role init` will not do this: it refuses to overwrite an existing
+file and writes a generic template.)
+
 If you want a bare `dispatch run --task "..."` (no `--role`) to go to the
 orchestrator and be broken down, set it as your default:
 
@@ -373,26 +400,49 @@ instructions, rather than something dispatch infers.
 dispatch
 ```
 
-```
-  Dispatch  repvault
+It opens on the Inbox: everything an agent is waiting on you for, each one
+answerable with a key, above a quiet list of what is still working.
 
-  › New task
-    Active      4
-    Needs you   2
-    Recent     11
-    Roles       6
 ```
+  Dispatch  all projects  [1 Inbox]  2 Board  3 Recent  4 Roles  ● 3 need you  ● 1 working  ● live
+
+  NEEDS YOU
+› ◆ DECISION  How should Search Ads get the new screenshots?        growth · RepClock · 12m
+      a  ★ Custom Product Page  faster · short review
+      b  Ship with 1.0.2        changes the main listing
+      a/b answer and the agent carries on · m reply · o open the conversation
+  ○ CHORE     Set up Search Ads account + billing                   growth · RepClock · 12m
+                ☐ Create account   ☐ Add a card
+                blocks: campaign setup
+  ▲ BLOCKED   Offline sync                                          engineer · ReadFlow · 1h
+                Do you want to proceed? (y/n)
+
+  WORKING
+    ● engineer      ReadFlow      adding offline sync tests · 2 of 3          1h
+```
+
+A decision is an ask with options; `★` marks the one the agent recommends.
+A chore is something only you can do, like creating an account. A blocked or
+done agent that filed no ask still shows up, with the tail of its screen. Once
+you answer, the status line reads `answered · delivered` and the item leaves
+the inbox; an answer the agent cannot take yet stays, marked `answered ·
+waiting to deliver`, until it is delivered.
 
 | key | |
 |---|---|
+| `1` `2` `3` `4` | Inbox / Board / Recent / Roles (`tab` cycles) |
+| `a` `b` `c` … | answer a decision with that option |
+| `m` | reply to a decision in your own words; `tab` in the reply picks an option to send with it |
+| `d` | mark a chore done |
+| `enter` | read the full message, or open details |
 | `n` | new task |
-| `enter` | select / open details |
 | `o` | open the agent's session in this terminal |
 | `x` | stop the selected task |
-| `tab` | cycle Active / Needs you / Recent |
+| `p` | all projects / this project |
 | `j` `k` `↑` `↓` | move |
+| `h` `l` `←` `→` | Board: previous / next column |
 | `r` | refresh |
-| `q` `esc` | back, or quit from home |
+| `q` `esc` | back, or quit from the tabs |
 | `?` | help |
 
 Creating a task is: launch dispatch, press `n`, type the task, pick a role,
@@ -413,6 +463,7 @@ what it is doing. `dispatch ls` shows the combination:
 | `idle` | ready for input |
 | `done` | finished a turn you have not looked at |
 | `detached` | dispatch has the task, but herdr no longer has its session |
+| `ended` | the session closed outside dispatch; it returns to `running` if the agent comes back |
 | `stopped` / `completed` / `failed` | closed out |
 
 `waiting` comes from herdr's own agent-state detection, not from scraping

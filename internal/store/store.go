@@ -119,6 +119,38 @@ CREATE INDEX IF NOT EXISTS idx_tasks_herdr_agent  ON tasks(herdr_agent);
 		name: "0002_herdr_layout",
 		stmt: `ALTER TABLE tasks ADD COLUMN herdr_layout TEXT NOT NULL DEFAULT 'tab';`,
 	},
+	{
+		// Asks are what an agent files for the human; options and items are
+		// JSON text because they are only ever read back whole.
+		name: "0003_asks_and_reports",
+		stmt: `
+CREATE TABLE IF NOT EXISTS asks (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL DEFAULT '',
+    options_json TEXT NOT NULL DEFAULT '[]',
+    recommended  INTEGER NOT NULL DEFAULT -1,
+    items_json   TEXT NOT NULL DEFAULT '[]',
+    blocks       TEXT NOT NULL DEFAULT '',
+    state        TEXT NOT NULL DEFAULT 'open',
+    answer       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    answered_at  TEXT,
+    delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_asks_task  ON asks(task_id);
+CREATE INDEX IF NOT EXISTS idx_asks_state ON asks(state);
+CREATE TABLE IF NOT EXISTS task_reports (
+    task_id    TEXT PRIMARY KEY,
+    line       TEXT NOT NULL DEFAULT '',
+    done       INTEGER NOT NULL DEFAULT 0,
+    total      INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {
@@ -195,15 +227,22 @@ func (s *Store) Update(ctx context.Context, t *Task) error {
 	return nil
 }
 
-// SetStatus updates only the lifecycle status (and completed_at when final).
+// SetStatus updates only the lifecycle status (setting completed_at when final and clearing it when running).
 func (s *Store) SetStatus(ctx context.Context, id string, status Status) error {
 	var completed any
-	if status == StatusCompleted || status == StatusStopped {
+	if status == StatusCompleted || status == StatusStopped || status == StatusEnded {
 		completed = nowString()
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET status=?, updated_at=?, completed_at=COALESCE(?, completed_at) WHERE id=?`,
-		string(status), nowString(), completed, id)
+	query := `UPDATE tasks SET status=?, updated_at=?, completed_at=COALESCE(?, completed_at) WHERE id=?`
+	if status == StatusRunning {
+		// A revived task is no longer finished.
+		query = `UPDATE tasks SET status=?, updated_at=?, completed_at=NULL WHERE id=?`
+	}
+	args := []any{string(status), nowString()}
+	if status != StatusRunning {
+		args = append(args, completed)
+	}
+	res, err := s.db.ExecContext(ctx, query, append(args, id)...)
 	if err != nil {
 		return err
 	}
@@ -252,6 +291,13 @@ type Filter struct {
 // ActiveFilter lists tasks dispatch still considers live.
 func ActiveFilter() Filter {
 	return Filter{Statuses: []Status{StatusPending, StatusRunning}}
+}
+
+// ActiveOrEndedFilter is ActiveFilter plus ended tasks, so a listing can show
+// an ended task whose agent has come back. Callers drop whatever is still
+// terminal once the tasks are hydrated.
+func ActiveOrEndedFilter() Filter {
+	return Filter{Statuses: []Status{StatusPending, StatusRunning, StatusEnded}}
 }
 
 // List returns tasks matching a filter, newest first.
@@ -407,6 +453,7 @@ type Counts struct {
 	Stopped int `json:"stopped"`
 	Done    int `json:"done"`
 	Failed  int `json:"failed"`
+	Ended   int `json:"ended"`
 }
 
 // Count returns task counts by status.
@@ -433,6 +480,8 @@ func (s *Store) Count(ctx context.Context) (Counts, error) {
 			c.Done += n
 		case StatusFailed:
 			c.Failed += n
+		case StatusEnded:
+			c.Ended += n
 		}
 	}
 	return c, rows.Err()

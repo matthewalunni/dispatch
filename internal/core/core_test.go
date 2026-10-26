@@ -1052,3 +1052,184 @@ func TestOrchestratorChildrenEachGetTheirOwnWorkspace(t *testing.T) {
 		t.Errorf("open workspaces = %d, want one per agent", h.Herdr.OpenWorkspaceCount())
 	}
 }
+
+// endSession kills a task's agent and moves the clock on by age, since the
+// store does not let a test rewrite created_at.
+func (h *harness) endSession(t *testing.T, result *DispatchResult, age time.Duration) {
+	t.Helper()
+	h.Herdr.Kill(result.Task.HerdrAgent)
+	h.now = func() time.Time { return time.Now().UTC().Add(age) }
+}
+
+func TestHydrateEndsATaskWhoseSessionIsGone(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	h.endSession(t, result, 2*time.Minute)
+
+	views, err := h.ActiveViews(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 0 {
+		t.Errorf("ActiveViews = %d views, want the ended task excluded", len(views))
+	}
+	task, _ := h.Store().Get(ctx, result.Task.ID)
+	if task.Status != store.StatusEnded || task.CompletedAt == nil {
+		t.Errorf("status = %q completed_at = %v, want ended with a completion time", task.Status, task.CompletedAt)
+	}
+	if view := h.HydrateOne(ctx, task); view.Effective != EffectiveEnded {
+		t.Errorf("Effective = %q, want ended", view.Effective)
+	}
+}
+
+func TestHydrateLeavesAFreshTaskAlone(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	h.endSession(t, result, 0)
+
+	views, err := h.ActiveViews(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].Effective != EffectiveDetached {
+		t.Fatalf("views = %+v, want one detached task", views)
+	}
+	task, _ := h.Store().Get(ctx, result.Task.ID)
+	if task.Status != store.StatusRunning {
+		t.Errorf("status = %q, want running", task.Status)
+	}
+}
+
+func TestHydrateDoesNotEndTasksWhenHerdrIsUnreachable(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	h.endSession(t, result, 2*time.Minute)
+	h.Herdr.ListErr = errors.New("herdr is down")
+
+	task, _ := h.Store().Get(ctx, result.Task.ID)
+	view := h.HydrateOne(ctx, task)
+	if view.Effective != EffectiveUnknown {
+		t.Errorf("Effective = %q, want unknown", view.Effective)
+	}
+	task, _ = h.Store().Get(ctx, result.Task.ID)
+	if task.Status != store.StatusRunning {
+		t.Errorf("status = %q, want running", task.Status)
+	}
+}
+
+func TestHydrateRevivesAnEndedTaskWhoseAgentReturns(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	agent, err := h.Herdr.GetAgent(ctx, result.Task.HerdrAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.endSession(t, result, 2*time.Minute)
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Herdr.Revive(agent)
+	views, err := h.ActiveViews(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("ActiveViews = %d views, want the revived task listed", len(views))
+	}
+	task, _ := h.Store().Get(ctx, result.Task.ID)
+	if task.Status != store.StatusRunning || task.CompletedAt != nil {
+		t.Errorf("status = %q completed_at = %v, want running with no completion time", task.Status, task.CompletedAt)
+	}
+}
+
+func TestWaitTreatsEndedLikeDetached(t *testing.T) {
+	for _, s := range DefaultWaitStates() {
+		if s == EffectiveEnded {
+			return
+		}
+	}
+	t.Error("DefaultWaitStates should include ended")
+}
+
+func TestRedispatchingALongTitleNeverRevivesTheEndedTask(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	const title = "Implement the very long feature name for onboarding screens"
+
+	var ended []*DispatchResult
+	for i := 0; i < 2; i++ {
+		result := h.dispatch(t, DispatchRequest{Role: "engineer", Title: title})
+		h.endSession(t, result, time.Duration(i+2)*time.Minute)
+		if _, err := h.ActiveViews(ctx); err != nil {
+			t.Fatal(err)
+		}
+		ended = append(ended, result)
+	}
+	fresh := h.dispatch(t, DispatchRequest{Role: "engineer", Title: title})
+
+	views, err := h.ActiveViews(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].ID != fresh.Task.ID {
+		t.Fatalf("ActiveViews = %+v, want only the new task", views)
+	}
+	seen := map[string]bool{fresh.Task.HerdrAgent: true}
+	for _, old := range ended {
+		task, _ := h.Store().Get(ctx, old.Task.ID)
+		if task.Status != store.StatusEnded {
+			t.Errorf("old task %s status = %q, want it to stay ended", task.ID, task.Status)
+		}
+		if seen[task.HerdrAgent] {
+			t.Errorf("agent name %q reused across tasks", task.HerdrAgent)
+		}
+		seen[task.HerdrAgent] = true
+	}
+}
+
+func TestHydrateDoesNotReviveAnEndedTaskOverAnotherTasksAgent(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	old := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Add the endpoint"})
+	h.endSession(t, old, 2*time.Minute)
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A new task that ends up on the same agent name (an explicit override)
+	// owns that agent; the ended task must not come back on it.
+	fresh := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Other work", AgentName: old.Task.HerdrAgent})
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := h.Store().Get(ctx, old.Task.ID)
+	if task.Status != store.StatusEnded {
+		t.Errorf("old task status = %q, want ended while %s owns the agent", task.Status, fresh.Task.ID)
+	}
+}
+
+func TestLiveViewsLimitCountsOnlyLiveTasks(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	live := h.dispatch(t, DispatchRequest{Role: "engineer", Title: "Still going"})
+	for _, title := range []string{"Gone one", "Gone two"} {
+		gone := h.dispatch(t, DispatchRequest{Role: "engineer", Title: title})
+		h.Herdr.Kill(gone.Task.HerdrAgent)
+	}
+	h.now = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) }
+	if _, err := h.ActiveViews(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	views, err := h.LiveViews(ctx, store.Filter{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(views) != 1 || views[0].ID != live.Task.ID {
+		t.Errorf("LiveViews(limit 1) = %d views, want the one live task despite newer ended ones", len(views))
+	}
+}

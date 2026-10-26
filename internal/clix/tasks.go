@@ -3,6 +3,7 @@ package clix
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -36,7 +37,8 @@ herdr where a session is still alive:
   waiting    herdr detected an approval or question; the agent needs you
   idle       the agent is ready for input
   done       the agent finished a turn and has not been looked at
-  detached   dispatch has a task but herdr no longer has its session`,
+  detached   dispatch has a task but herdr no longer has its session
+  ended      the session closed outside dispatch`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			app, err := openApp()
@@ -59,14 +61,24 @@ herdr where a session is still alive:
 				}
 				filter.ParentTaskID = task.ID
 				filter.IncludeTerminal = true
+				filter.Statuses = nil
 				filter.ProjectRoot = ""
 			}
 
-			tasks, err := app.Tasks(cmd.Context(), filter)
+			var views []core.TaskView
+			if !all && parent == "" {
+				// Live tasks only, with --limit counting the ones still live
+				// once hydrating has ended or revived what it needs to.
+				views, err = app.LiveViews(cmd.Context(), filter)
+			} else {
+				var tasks []store.Task
+				if tasks, err = app.Tasks(cmd.Context(), filter); err == nil {
+					views = app.Hydrate(cmd.Context(), tasks)
+				}
+			}
 			if err != nil {
 				return err
 			}
-			views := app.Hydrate(cmd.Context(), tasks)
 
 			if attention {
 				var filtered []core.TaskView
@@ -102,21 +114,38 @@ func printTaskTable(views []core.TaskView, showProject bool) {
 		return
 	}
 	now := time.Now().UTC()
-	tw := newTabWriter(os.Stdout)
-	if showProject {
-		fmt.Fprintln(tw, styleDim("PROJECT\tTASK\tROLE\tSTATUS\tAGE\tREF"))
-	} else {
-		fmt.Fprintln(tw, styleDim("TASK\tROLE\tSTATUS\tAGE\tREF"))
-	}
+	showAsks := false
 	for _, v := range views {
-		status := statusLabel(v.Effective)
-		if showProject {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				truncate(v.ProjectName, 18), truncate(v.Title, 44), v.Role, status, v.Age(now), v.Slug)
-		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-				truncate(v.Title, 52), v.Role, status, v.Age(now), v.Slug)
+		if len(v.OpenAsks) > 0 {
+			showAsks = true
 		}
+	}
+	tw := newTabWriter(os.Stdout)
+	header := "TASK\tROLE\tSTATUS\tAGE"
+	if showAsks {
+		header += "\tASKS"
+	}
+	header += "\tREF"
+	if showProject {
+		header = "PROJECT\t" + header
+	}
+	fmt.Fprintln(tw, styleDim(header))
+	for _, v := range views {
+		cols := []string{truncate(v.Title, 44), v.Role, statusLabel(v.Effective), v.Age(now)}
+		if showProject {
+			cols = append([]string{truncate(v.ProjectName, 18)}, cols...)
+		} else {
+			cols[0] = truncate(v.Title, 52)
+		}
+		if showAsks {
+			asks := ""
+			if n := len(v.OpenAsks); n > 0 {
+				asks = styleWarn(fmt.Sprintf("%d", n))
+			}
+			cols = append(cols, asks)
+		}
+		cols = append(cols, v.Slug)
+		fmt.Fprintln(tw, strings.Join(cols, "\t"))
 	}
 	tw.Flush()
 }
@@ -129,7 +158,7 @@ func statusLabel(s core.EffectiveStatus) string {
 		return styleWarn(string(s))
 	case core.EffectiveFailed, core.EffectiveDetached:
 		return styleFail(string(s))
-	case core.EffectiveStopped, core.EffectiveCompleted:
+	case core.EffectiveStopped, core.EffectiveCompleted, core.EffectiveEnded:
 		return styleDim(string(s))
 	default:
 		return string(s)

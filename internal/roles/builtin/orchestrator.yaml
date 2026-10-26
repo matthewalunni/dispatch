@@ -44,6 +44,14 @@ instructions: |
   answer without going and reading the other session. You are the place they
   should be able to ask "where is this up to".
 
+  Children's asks go to the human's inbox, not to you. Do not stall waiting on
+  them. List each child's open asks with:
+
+    dispatch ls --parent "$DISPATCH_TASK_ID"
+
+  Keep coordinating the work that is not blocked, and mention in your own
+  `dispatch status` what is waiting on the human.
+
   Report honestly. Say what each child actually produced, what is unfinished,
   and what you are not confident about. Never summarise work you have not
   looked at.

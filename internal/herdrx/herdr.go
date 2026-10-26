@@ -163,6 +163,8 @@ type Client interface {
 	CreateTab(ctx context.Context, req CreateTabRequest) (Tab, error)
 	StartAgent(ctx context.Context, req StartAgentRequest) (Agent, error)
 	PromptAgent(ctx context.Context, target, text string) error
+	// ReadAgent returns the last lines of an agent's screen as plain text.
+	ReadAgent(ctx context.Context, target string, lines int) (string, error)
 	ListAgents(ctx context.Context) ([]Agent, error)
 	GetAgent(ctx context.Context, target string) (Agent, error)
 	FocusAgent(ctx context.Context, target string) error
@@ -248,6 +250,23 @@ type envelope struct {
 
 // exec runs a herdr command and returns its decoded `result` object.
 func (c *CLI) exec(ctx context.Context, args ...string) (json.RawMessage, error) {
+	out, err := c.run(ctx, args...)
+	if err != nil || len(out) == 0 {
+		return nil, err
+	}
+	var env envelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("herdr %s: unexpected output: %s", strings.Join(args, " "), firstLine(string(out)))
+	}
+	if env.Error != nil {
+		return nil, env.Error
+	}
+	return env.Result, nil
+}
+
+// run executes herdr and returns its trimmed stdout, turning failures into
+// typed errors.
+func (c *CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.Binary, c.argv(args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -273,18 +292,7 @@ func (c *CLI) exec(ctx context.Context, args ...string) (json.RawMessage, error)
 		return nil, fmt.Errorf("herdr %s: %w", strings.Join(args, " "), runErr)
 	}
 
-	out := bytes.TrimSpace(stdout.Bytes())
-	if len(out) == 0 {
-		return nil, nil
-	}
-	var env envelope
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("herdr %s: unexpected output: %s", strings.Join(args, " "), firstLine(string(out)))
-	}
-	if env.Error != nil {
-		return nil, env.Error
-	}
-	return env.Result, nil
+	return bytes.TrimSpace(stdout.Bytes()), nil
 }
 
 // isMissingBinary reports an unrunnable herdr binary. A name resolved through
@@ -621,6 +629,17 @@ func (c *CLI) StartAgent(ctx context.Context, req StartAgentRequest) (Agent, err
 func (c *CLI) PromptAgent(ctx context.Context, target, text string) error {
 	_, err := c.exec(ctx, "agent", "prompt", target, text)
 	return err
+}
+
+// ReadAgent returns the agent's recent screen. With `--format text` herdr
+// prints the screen as plain text; its errors arrive as a JSON envelope on
+// stderr, which run already turns into an *Error.
+func (c *CLI) ReadAgent(ctx context.Context, target string, lines int) (string, error) {
+	out, err := c.run(ctx, "agent", "read", target, "--source", "recent", "--lines", strconv.Itoa(lines), "--format", "text")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
 }
 
 func (c *CLI) ListAgents(ctx context.Context) ([]Agent, error) {

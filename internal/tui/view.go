@@ -15,38 +15,100 @@ func (m *model) View() string {
 		return ""
 	}
 
+	header, banner, footer := m.viewHeader(), m.viewBanner(), m.viewFooter()
+	sections := func(body string) string {
+		parts := []string{header, body}
+		if banner != "" {
+			parts = append(parts, banner)
+		}
+		parts = append(parts, footer)
+		return strings.Join(parts, "\n") + "\n"
+	}
+
+	// Bubble Tea keeps only the last height lines of a view that is too tall,
+	// which would cut the tab bar off, so the body gets what the header,
+	// banner and footer leave over.
+	maxBody := 0
+	if m.height > 0 {
+		maxBody = maxInt(1, m.height-lineCount(sections(""))+1)
+	}
+
 	var body string
 	switch m.screen {
-	case screenHome:
-		body = m.viewHome()
-	case screenTasks:
-		body = m.viewTasks()
+	case screenMain:
+		body = m.viewTab(maxBody)
 	case screenNew:
 		body = m.viewNew()
-	case screenRoles:
-		body = m.viewRoles()
 	case screenDetail:
 		body = m.viewDetail()
 	case screenHelp:
 		body = m.viewHelp()
 	}
+	return sections(body)
+}
 
-	sections := []string{m.viewHeader(), body}
-	if banner := m.viewBanner(); banner != "" {
-		sections = append(sections, banner)
+// viewTab renders the active tab; maxBody, when positive, is how many lines
+// the Inbox and Board may take.
+func (m *model) viewTab(maxBody int) string {
+	switch m.tab {
+	case tabBoard:
+		return m.viewBoard(maxBody)
+	case tabRecent:
+		return m.viewTasks()
+	case tabRoles:
+		return m.viewRoles()
+	default:
+		return m.viewInbox(maxBody)
 	}
-	sections = append(sections, m.viewFooter())
-	return strings.Join(sections, "\n") + "\n"
+}
+
+// lineCount is how many terminal lines s draws.
+func lineCount(s string) int { return strings.Count(s, "\n") + 1 }
+
+// fitLines cuts s to at most max lines, keeping lines focusStart..focusEnd in
+// view. A non-positive max means no limit.
+func fitLines(s string, focusStart, focusEnd, max int) string {
+	lines := strings.Split(s, "\n")
+	if max <= 0 || len(lines) <= max {
+		return s
+	}
+	return strings.Join(scrollWindow(lines, focusStart, focusEnd, max), "\n")
+}
+
+// scrollWindow returns height lines around the focus, the top of the focus
+// winning when it is taller than the window. A line at each end says when
+// there is more beyond it.
+func scrollWindow(lines []string, focusStart, focusEnd, height int) []string {
+	if len(lines) <= height {
+		return lines
+	}
+	if height < 3 {
+		start := maxInt(0, minInt(focusStart, len(lines)-height))
+		return lines[start : start+height]
+	}
+	inner := height - 2
+	start := 0
+	if focusEnd >= inner {
+		start = minInt(focusStart, focusEnd+1-inner)
+	}
+	start = maxInt(0, minInt(start, len(lines)-inner))
+	above, below := "", ""
+	if start > 0 {
+		above = "  " + faintStyle.Render("↑ more")
+	}
+	if start+inner < len(lines) {
+		below = "  " + faintStyle.Render("↓ more")
+	}
+	out := make([]string, 0, height)
+	out = append(out, above)
+	out = append(out, lines[start:start+inner]...)
+	return append(out, below)
 }
 
 func (m *model) viewHeader() string {
-	title := titleStyle.Render("Dispatch")
-	right := ""
-	if m.ctx != nil {
-		right = dimStyle.Render(m.ctx.Project.Name)
-		if !m.ctx.Project.IsGit {
-			right += faintStyle.Render(" (not a repo)")
-		}
+	needsYou, working := 0, 0
+	if m.overview != nil {
+		needsYou, working = m.overview.NeedsYou, m.overview.WorkingCount
 	}
 	// Say plainly whether status is arriving live from herdr or on the slower
 	// polling fallback, so a stale-looking screen is never a mystery.
@@ -54,7 +116,44 @@ func (m *model) viewHeader() string {
 	if m.live {
 		live = okStyle.Render("● live")
 	}
-	return fmt.Sprintf("\n  %s  %s  %s\n", title, right, live)
+	return fmt.Sprintf("\n  %s  %s\n", renderTabBar(m.tab, needsYou, working, m.scopeLabel()), live)
+}
+
+// renderTabBar draws the header line: where you are, the tabs with the active
+// one bracketed, and the two counts that matter at a glance.
+func renderTabBar(active tab, needsYou, working int, scope string) string {
+	parts := []string{titleStyle.Render("Dispatch"), dimStyle.Render(scope)}
+	for t := tabInbox; t < tabCount; t++ {
+		name := fmt.Sprintf("%d %s", int(t)+1, t.title())
+		if t == active {
+			parts = append(parts, selectedStyle.Render("["+name+"]"))
+		} else {
+			parts = append(parts, dimStyle.Render(name))
+		}
+	}
+	needStyle := dimStyle
+	if needsYou > 0 {
+		needStyle = warnStyle
+	}
+	parts = append(parts,
+		needStyle.Render(fmt.Sprintf("● %d need you", needsYou)),
+		okStyle.Render(fmt.Sprintf("● %d working", working)))
+	return strings.Join(parts, "  ")
+}
+
+// scopeLabel names what the tabs are showing: every project, or this one.
+func (m *model) scopeLabel() string {
+	if m.allProjects {
+		return "all projects"
+	}
+	if m.ctx == nil {
+		return "this project"
+	}
+	label := m.ctx.Project.Name
+	if !m.ctx.Project.IsGit {
+		label += " (not a repo)"
+	}
+	return label
 }
 
 func (m *model) viewBanner() string {
@@ -75,71 +174,48 @@ func (m *model) viewBanner() string {
 func (m *model) viewFooter() string {
 	var keys string
 	switch m.screen {
-	case screenHome:
-		keys = "↑/↓ move · enter select · n new task · r refresh · ? help · q quit"
-	case screenTasks:
-		keys = "↑/↓ move · enter details · o open session · x stop · tab switch list · n new · r refresh · q back"
+	case screenMain:
+		keys = m.tabKeys()
 	case screenDetail:
 		keys = "enter open session · x stop · q back"
 	case screenNew:
 		keys = "tab next field · ←/→ change · enter dispatch · esc cancel"
-	case screenRoles:
-		keys = "↑/↓ move · enter dispatch with this role · q back"
 	case screenHelp:
 		keys = "? or q to close"
 	}
 	return "\n" + footerStyle.Render("  "+keys)
 }
 
-func (m *model) viewHome() string {
-	var b strings.Builder
-	counts := map[string]string{
-		"Active":    fmt.Sprintf("%d", m.counts.Active),
-		"Needs you": fmt.Sprintf("%d", m.attention),
-		"Recent":    fmt.Sprintf("%d", m.counts.Total),
-		"Roles":     fmt.Sprintf("%d", len(m.allRoles())),
-	}
-
-	b.WriteString("\n")
-	for i, item := range homeItems {
-		cursor := "  "
-		label := textStyle.Render(item.label)
-		if i == m.homeCursor {
-			cursor = selectedStyle.Render("› ")
-			label = selectedStyle.Render(item.label)
+func (m *model) tabKeys() string {
+	const shared = "1-4 tabs · p projects · n new · ? help · q quit"
+	switch m.tab {
+	case tabInbox:
+		if m.replying {
+			return "enter send · tab option · esc cancel"
 		}
-		count := ""
-		if value, ok := counts[item.label]; ok {
-			style := dimStyle
-			if item.label == "Needs you" && m.attention > 0 {
-				style = warnStyle
-			}
-			count = "  " + style.Render(value)
-		}
-		fmt.Fprintf(&b, "  %s%s%s\n", cursor, label, count)
+		return "j/k move · a/b choose · m reply · d chore done · enter more · o open · x stop · " + shared
+	case tabBoard:
+		return "h/l column · j/k card · enter details · o open · x stop · " + shared
+	case tabRecent:
+		return "↑/↓ move · enter details · o open session · x stop · " + shared
+	case tabRoles:
+		return "↑/↓ move · enter dispatch with this role · " + shared
+	default:
+		return shared
 	}
-
-	if m.ctx != nil {
-		b.WriteString("\n")
-		fmt.Fprintf(&b, "  %s\n", faintStyle.Render(m.ctx.Project.Root))
-		if m.ctx.Project.HasDispatchDir {
-			fmt.Fprintf(&b, "  %s\n", faintStyle.Render(".dispatch/ overrides active"))
-		}
-	}
-	return b.String()
 }
 
 func (m *model) viewTasks() string {
-	tasks := m.visibleTasks()
+	tasks := m.views
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n  %s %s\n\n", titleStyle.Render(m.scope.title()), dimStyle.Render(fmt.Sprintf("(%d)", len(tasks))))
+	fmt.Fprintf(&b, "\n  %s %s\n\n", titleStyle.Render("Recent"), dimStyle.Render(fmt.Sprintf("(%d)", len(tasks))))
 
 	if m.loading && len(tasks) == 0 {
 		b.WriteString("  " + dimStyle.Render("loading…") + "\n")
 		return b.String()
 	}
 	if len(tasks) == 0 {
-		b.WriteString("  " + dimStyle.Render(emptyMessage(m.scope)) + "\n")
+		b.WriteString("  " + dimStyle.Render("no tasks yet — press n to dispatch one") + "\n")
 		return b.String()
 	}
 
@@ -188,17 +264,6 @@ func (m *model) viewTasks() string {
 		fmt.Fprintln(&b, line)
 	}
 	return b.String()
-}
-
-func emptyMessage(scope taskScope) string {
-	switch scope {
-	case scopeAttention:
-		return "nothing is waiting on you"
-	case scopeRecent:
-		return "no tasks yet — press n to dispatch one"
-	default:
-		return "no active tasks — press n to dispatch one"
-	}
 }
 
 func (m *model) viewNew() string {
@@ -301,14 +366,18 @@ func (m *model) viewHelp() string {
 		"dispatch is a control centre. Conversations live in herdr;",
 		"this is where you start them and find your way back.",
 		"",
+		"  1 2 3 4    Inbox / Board / Recent / Roles (tab cycles)",
+		"  a b c …    answer a decision with that option (★ is the agent's pick)",
+		"  m          reply to a decision in your own words",
+		"  d          mark a chore done",
+		"  enter      read the full message, or open details",
 		"  n          new task",
-		"  enter      select / open details",
 		"  o          open the agent's herdr session in this terminal",
 		"  x          stop the selected task's agent",
-		"  tab        switch between Active / Needs you / Recent",
-		"  j k ↑ ↓    move",
+		"  p          all projects / this project",
+		"  j k ↑ ↓    move (on the Board h l ← → change column)",
 		"  r          refresh",
-		"  q esc      back, or quit from the home screen",
+		"  q esc      back, or quit from the tabs",
 		"  ctrl+c     quit",
 		"  ?          this help",
 		"",
@@ -318,6 +387,7 @@ func (m *model) viewHelp() string {
 		"  idle       ready for input",
 		"  done       finished a turn you have not looked at",
 		"  detached   dispatch has the task but herdr lost the session",
+		"  ended      the session closed outside dispatch; it comes back if the agent does",
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s\n\n", titleStyle.Render("Help"))
@@ -341,7 +411,7 @@ func statusStyle(status core.EffectiveStatus) lipgloss.Style {
 		return warnStyle
 	case core.EffectiveDetached, core.EffectiveFailed:
 		return failStyle
-	case core.EffectiveStopped, core.EffectiveCompleted:
+	case core.EffectiveStopped, core.EffectiveCompleted, core.EffectiveEnded:
 		return faintStyle
 	default:
 		return dimStyle

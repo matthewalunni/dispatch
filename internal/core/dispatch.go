@@ -302,9 +302,10 @@ func (a *App) pickAgentName(ctx context.Context, override string, role roles.Rol
 			}
 		}
 	}
-	// Also avoid names dispatch believes belong to its own running tasks, so a
-	// restarted herdr server does not produce confusing duplicates.
-	if tasks, err := a.store.List(ctx, store.ActiveFilter()); err == nil {
+	// Also avoid names dispatch believes belong to its own running or ended
+	// tasks, so a restarted herdr server does not produce confusing duplicates
+	// and a new agent is never mistaken for an ended task's returning one.
+	if tasks, err := a.store.List(ctx, store.ActiveOrEndedFilter()); err == nil {
 		for _, t := range tasks {
 			if t.HerdrAgent != "" {
 				live[t.HerdrAgent] = true

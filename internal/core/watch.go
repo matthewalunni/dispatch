@@ -270,7 +270,7 @@ type WaitOptions struct {
 // DefaultWaitStates are the states a caller normally cares about: the agent
 // has stopped producing work and either needs a human or has finished.
 func DefaultWaitStates() []EffectiveStatus {
-	return []EffectiveStatus{EffectiveWaiting, EffectiveIdle, EffectiveDone, EffectiveDetached}
+	return []EffectiveStatus{EffectiveWaiting, EffectiveIdle, EffectiveDone, EffectiveDetached, EffectiveEnded}
 }
 
 // WaitFor blocks until a task reaches one of the requested states.
@@ -290,6 +290,11 @@ func (a *App) WaitFor(ctx context.Context, ref string, opts WaitOptions) (*WaitR
 	wanted := make(map[EffectiveStatus]bool, len(until))
 	for _, status := range until {
 		wanted[status] = true
+		// A detached task becomes ended once EndGrace passes, so waiting for
+		// detached must not miss a session that has gone for good.
+		if status == EffectiveDetached {
+			wanted[EffectiveEnded] = true
+		}
 	}
 
 	if opts.Timeout > 0 {

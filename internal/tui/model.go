@@ -14,34 +14,37 @@ import (
 	"github.com/matthewalunni/dispatch/internal/store"
 )
 
+// screen is what fills the body: the tabbed main view, or a screen laid over it.
 type screen int
 
 const (
-	screenHome screen = iota
-	screenTasks
+	screenMain screen = iota
 	screenNew
-	screenRoles
 	screenDetail
 	screenHelp
 )
 
-// taskScope selects which tasks the task screen is showing.
-type taskScope int
+// tab is one of the main view's tabs, switched with 1–4 or tab.
+type tab int
 
 const (
-	scopeActive taskScope = iota
-	scopeAttention
-	scopeRecent
+	tabInbox tab = iota
+	tabBoard
+	tabRecent
+	tabRoles
+	tabCount
 )
 
-func (s taskScope) title() string {
-	switch s {
-	case scopeAttention:
-		return "Needs you"
-	case scopeRecent:
+func (t tab) title() string {
+	switch t {
+	case tabBoard:
+		return "Board"
+	case tabRecent:
 		return "Recent"
+	case tabRoles:
+		return "Roles"
 	default:
-		return "Active"
+		return "Inbox"
 	}
 }
 
@@ -51,22 +54,45 @@ type model struct {
 
 	screen   screen
 	prev     screen
+	tab      tab
 	width    int
 	height   int
 	quitting bool
 
-	// Home
-	homeCursor int
+	// allProjects shows every project's tasks; off narrows to the current one.
+	allProjects bool
 
-	// Task list
-	scope      taskScope
+	// Inbox and board data.
+	overview    *core.Overview
+	inboxCursor int
+	// expanded shows the selected item's full body or screen.
+	expanded bool
+	replying bool
+	reply    textinput.Model
+	// replyAskID is the ask the open reply answers, fixed when it was opened
+	// so a reload that moves the cursor cannot redirect it.
+	replyAskID string
+	// replyOption is the option sent with the reply, -1 for none; tab cycles it.
+	replyOption int
+	// inFlight holds asks whose answer is being sent, so a second key press
+	// does not send it twice.
+	inFlight map[string]bool
+	// pending remembers why an answer could not be delivered, by ask id, for
+	// as long as the ask stays answered.
+	pending map[string]string
+
+	// Board cursor: the column and the card within it.
+	boardCol core.Column
+	boardRow int
+
+	// Recent list
 	views      []core.TaskView
 	taskCursor int
 	loading    bool
-
-	// Counts for the home screen
-	counts    store.Counts
-	attention int
+	// loadInFlight keeps one load running at a time, so an older load can
+	// never land over a newer one; reloadAfter asks for one more once it does.
+	loadInFlight bool
+	reloadAfter  bool
 
 	// Resolved project context, refreshed on load.
 	ctx *core.Context
@@ -126,12 +152,25 @@ func newModel(app *core.App, version string) *model {
 	input.Width = 60
 	input.Prompt = "› "
 
+	reply := textinput.New()
+	reply.Placeholder = "reply to the agent"
+	reply.CharLimit = 1000
+	reply.Width = 60
+	reply.Prompt = "reply › "
+
 	return &model{
-		app:     app,
-		version: version,
-		screen:  screenHome,
-		form:    form{input: input},
-		loading: true,
+		app:         app,
+		version:     version,
+		screen:      screenMain,
+		tab:         tabInbox,
+		boardCol:    core.ColumnNeedsYou,
+		allProjects: true,
+		form:        form{input: input},
+		reply:       reply,
+		replyOption: -1,
+		inFlight:    map[string]bool{},
+		pending:     map[string]string{},
+		loading:     true,
 	}
 }
 
@@ -142,11 +181,18 @@ func (m *model) Init() tea.Cmd {
 // ---------------------------------------------------------------- messages
 
 type loadedMsg struct {
-	ctx       *core.Context
-	views     []core.TaskView
-	counts    store.Counts
-	attention int
-	err       error
+	ctx      *core.Context
+	overview *core.Overview
+	// views is the Recent list, loaded only when recent is set.
+	views  []core.TaskView
+	recent bool
+	err    error
+}
+
+type answeredMsg struct {
+	askID  string
+	result *core.AnswerResult
+	err    error
 }
 
 type dispatchedMsg struct {
@@ -202,46 +248,64 @@ func (m *model) startWatch() tea.Cmd {
 	return waitForChange(ch)
 }
 
+// loadCmd starts a load, or, if one is already running, queues a single
+// follow-up so changes that arrive meanwhile are still picked up.
 func (m *model) loadCmd() tea.Cmd {
+	if m.loadInFlight {
+		m.reloadAfter = true
+		return nil
+	}
+	m.loadInFlight = true
+	return m.fetchCmd()
+}
+
+func (m *model) fetchCmd() tea.Cmd {
 	app := m.app
-	scope := m.scope
+	allProjects := m.allProjects
+	// The Recent list costs a second hydrate, so it loads only when shown.
+	recent := m.tab == tabRecent
 	return func() tea.Msg {
 		ctx := context.Background()
 		rc, err := app.Resolve("")
 		if err != nil {
 			return loadedMsg{err: err}
 		}
-
-		filter := store.Filter{}
-		switch scope {
-		case scopeRecent:
-			filter = store.Filter{IncludeTerminal: true, Limit: 50}
-		default:
-			filter = store.ActiveFilter()
+		root := ""
+		if !allProjects {
+			root = rc.Project.Root
 		}
-		tasks, err := app.Tasks(ctx, filter)
+
+		overview, err := app.Overview(ctx, core.OverviewOptions{ProjectRoot: root})
 		if err != nil {
 			return loadedMsg{ctx: rc, err: err}
 		}
-		views := app.Hydrate(ctx, tasks)
+		msg := loadedMsg{ctx: rc, overview: overview}
+		if !recent {
+			return msg
+		}
+		msg.recent = true
 
-		// Attention count always reflects live tasks, whatever is on screen.
-		active := views
-		if scope == scopeRecent {
-			live, err := app.Tasks(ctx, store.ActiveFilter())
-			if err == nil {
-				active = app.Hydrate(ctx, live)
+		tasks, err := app.Tasks(ctx, store.Filter{IncludeTerminal: true, Limit: 50})
+		if err != nil {
+			msg.err = err
+			return msg
+		}
+		for _, v := range app.Hydrate(ctx, tasks) {
+			if root == "" || v.ProjectRoot == root {
+				msg.views = append(msg.views, v)
 			}
 		}
-		attention := 0
-		for _, v := range active {
-			if v.Effective.NeedsAttention() {
-				attention++
-			}
-		}
+		return msg
+	}
+}
 
-		counts, _ := app.Store().Count(ctx)
-		return loadedMsg{ctx: rc, views: views, counts: counts, attention: attention}
+// answerCmd records and delivers an answer; the reply arrives as answeredMsg.
+func (m *model) answerCmd(askID string, ans core.Answer) tea.Cmd {
+	app := m.app
+	m.inFlight[askID] = true
+	return func() tea.Msg {
+		result, err := app.AnswerAsk(context.Background(), askID, ans)
+		return answeredMsg{askID: askID, result: result, err: err}
 	}
 }
 
@@ -316,19 +380,42 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loadedMsg:
 		m.loading = false
+		m.loadInFlight = false
+		var again tea.Cmd
+		if m.reloadAfter {
+			m.reloadAfter = false
+			again = m.loadCmd()
+		}
 		if msg.err != nil {
 			m.err = msg.err
-			return m, nil
+			return m, again
 		}
 		m.ctx = msg.ctx
-		m.views = msg.views
-		m.counts = msg.counts
-		m.attention = msg.attention
-		m.form.syncRoles(msg.ctx)
-		if m.taskCursor >= len(m.visibleTasks()) {
-			m.taskCursor = maxInt(0, len(m.visibleTasks())-1)
+		m.setOverview(msg.overview)
+		if msg.recent {
+			m.views = msg.views
 		}
-		return m, nil
+		m.form.syncRoles(msg.ctx)
+		if m.taskCursor >= len(m.views) {
+			m.taskCursor = maxInt(0, len(m.views)-1)
+		}
+		return m, again
+
+	case answeredMsg:
+		delete(m.inFlight, msg.askID)
+		if msg.err != nil {
+			m.err = msg.err
+			return m, m.loadCmd()
+		}
+		m.err = nil
+		if msg.result.Delivered {
+			delete(m.pending, msg.askID)
+			m.status = "answered · delivered"
+		} else {
+			m.pending[msg.askID] = msg.result.Reason
+			m.status = "answered · " + pendingLabel(msg.result.Reason)
+		}
+		return m, m.loadCmd()
 
 	case dispatchedMsg:
 		m.form.submitting = false
@@ -343,9 +430,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.form.input.SetValue("")
 		m.form.field = fieldTask
-		m.screen = screenTasks
-		m.scope = scopeActive
-		m.taskCursor = 0
+		m.screen = screenMain
 		return m, m.loadCmd()
 
 	case stoppedMsg:
@@ -389,6 +474,11 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.quit()
 	}
 
+	// A reply being typed owns space, enter and esc, even under an error.
+	if m.replying {
+		return m.handleReplyKey(msg)
+	}
+
 	// Dismiss an error banner with any key rather than trapping the user.
 	if m.err != nil && (key == "esc" || key == "enter" || key == " ") {
 		m.err = nil
@@ -409,13 +499,16 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "q", "esc":
-		switch m.screen {
-		case screenHome:
+		switch {
+		case m.screen == screenMain && key == "esc" && m.expanded:
+			// esc folds an opened item away before it quits anything.
+			m.expanded = false
+		case m.screen == screenMain:
 			return m, m.quit()
-		case screenHelp:
+		case m.screen == screenHelp:
 			m.screen = m.prev
 		default:
-			m.screen = screenHome
+			m.screen = screenMain
 		}
 		return m, nil
 	case "n":
@@ -430,65 +523,64 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.screen {
-	case screenHome:
-		return m.handleHomeKey(key)
-	case screenTasks, screenDetail:
+	case screenDetail:
+		return m.handleDetailKey(key)
+	case screenMain:
+		return m.handleMainKey(key)
+	}
+	return m, nil
+}
+
+// handleMainKey takes the keys every tab shares, then the active tab's own.
+func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "1", "2", "3", "4":
+		return m, m.switchTab(tab(key[0] - '1'))
+	case "tab":
+		return m, m.switchTab(tab(wrap(int(m.tab)+1, int(tabCount))))
+	case "shift+tab":
+		return m, m.switchTab(tab(wrap(int(m.tab)-1, int(tabCount))))
+	case "p":
+		m.allProjects = !m.allProjects
+		m.inboxCursor, m.taskCursor = 0, 0
+		m.boardCol, m.boardRow = core.ColumnNeedsYou, 0
+		return m, m.loadCmd()
+	}
+
+	switch m.tab {
+	case tabInbox:
+		return m.handleInboxKey(key)
+	case tabBoard:
+		return m.handleBoardKey(key)
+	case tabRecent:
 		return m.handleTasksKey(key)
-	case screenRoles:
+	case tabRoles:
 		return m.handleRolesKey(key)
 	}
 	return m, nil
 }
 
-var homeItems = []struct {
-	label  string
-	screen screen
-	scope  taskScope
-}{
-	{"New task", screenNew, scopeActive},
-	{"Active", screenTasks, scopeActive},
-	{"Needs you", screenTasks, scopeAttention},
-	{"Recent", screenTasks, scopeRecent},
-	{"Roles", screenRoles, scopeActive},
-}
-
-func (m *model) handleHomeKey(key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "up", "k":
-		m.homeCursor = wrap(m.homeCursor-1, len(homeItems))
-	case "down", "j":
-		m.homeCursor = wrap(m.homeCursor+1, len(homeItems))
-	case "enter", "l", "right":
-		item := homeItems[m.homeCursor]
-		m.screen = item.screen
-		m.scope = item.scope
-		m.taskCursor = 0
-		if item.screen == screenNew {
-			m.form.field = fieldTask
-			m.form.input.Focus()
-			return m, textinput.Blink
-		}
-		return m, m.loadCmd()
+func (m *model) switchTab(t tab) tea.Cmd {
+	if t == m.tab {
+		return nil
 	}
-	return m, nil
+	m.tab = t
+	m.expanded = false
+	if t == tabRecent {
+		m.taskCursor = 0
+		return m.loadCmd()
+	}
+	return nil
 }
 
 func (m *model) handleTasksKey(key string) (tea.Model, tea.Cmd) {
-	tasks := m.visibleTasks()
 	switch key {
 	case "up", "k":
-		m.taskCursor = wrap(m.taskCursor-1, len(tasks))
+		m.taskCursor = wrap(m.taskCursor-1, len(m.views))
 	case "down", "j":
-		m.taskCursor = wrap(m.taskCursor+1, len(tasks))
-	case "tab":
-		m.scope = taskScope(wrap(int(m.scope)+1, 3))
-		m.taskCursor = 0
-		return m, m.loadCmd()
+		m.taskCursor = wrap(m.taskCursor+1, len(m.views))
 	case "enter":
-		if selected, ok := m.selected(); ok {
-			if m.screen == screenDetail {
-				return m, m.openCmd(selected)
-			}
+		if _, ok := m.selected(); ok {
 			m.screen = screenDetail
 		}
 	case "o":
@@ -497,13 +589,31 @@ func (m *model) handleTasksKey(key string) (tea.Model, tea.Cmd) {
 		}
 	case "x":
 		if selected, ok := m.selected(); ok {
-			m.confirm = &confirmation{
-				prompt: fmt.Sprintf("Stop %q? Its worktree is kept. (y/N)", truncate(selected.Title, 48)),
-				action: func(m *model) tea.Cmd { return m.stopCmd(selected) },
-			}
+			m.confirmStop(selected)
 		}
 	}
 	return m, nil
+}
+
+func (m *model) handleDetailKey(key string) (tea.Model, tea.Cmd) {
+	selected, ok := m.selected()
+	if !ok {
+		return m, nil
+	}
+	switch key {
+	case "enter", "o":
+		return m, m.openCmd(selected)
+	case "x":
+		m.confirmStop(selected)
+	}
+	return m, nil
+}
+
+func (m *model) confirmStop(view core.TaskView) {
+	m.confirm = &confirmation{
+		prompt: fmt.Sprintf("Stop %q? Its worktree is kept. (y/N)", truncate(view.Title, 48)),
+		action: func(m *model) tea.Cmd { return m.stopCmd(view) },
+	}
 }
 
 func (m *model) handleRolesKey(key string) (tea.Model, tea.Cmd) {
@@ -530,7 +640,7 @@ func (m *model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.form.input.Blur()
-		m.screen = screenHome
+		m.screen = screenMain
 		return m, nil
 	case "tab", "down":
 		m.form.field = wrap(m.form.field+1, fieldCount)
@@ -567,25 +677,16 @@ func (m *model) handleNewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ------------------------------------------------------------------ helpers
 
-func (m *model) visibleTasks() []core.TaskView {
-	if m.scope != scopeAttention {
-		return m.views
-	}
-	var out []core.TaskView
-	for _, v := range m.views {
-		if v.Effective.NeedsAttention() {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
+// selected is the task the detail screen, open and stop act on: the board's
+// card on the Board, the Recent list's row otherwise.
 func (m *model) selected() (core.TaskView, bool) {
-	tasks := m.visibleTasks()
-	if m.taskCursor < 0 || m.taskCursor >= len(tasks) {
+	if m.tab == tabBoard {
+		return m.boardSelected()
+	}
+	if m.taskCursor < 0 || m.taskCursor >= len(m.views) {
 		return core.TaskView{}, false
 	}
-	return tasks[m.taskCursor], true
+	return m.views[m.taskCursor], true
 }
 
 func (m *model) allRoles() []roles.Role {

@@ -213,3 +213,38 @@ func TestBuildDoesNotLeakMetadataIntoThePrompt(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildIncludesWorkingProactively(t *testing.T) {
+	out := Build(Request{
+		Role: engineerRole(), Project: sampleProject(),
+		Title: "X", Isolation: roles.IsolationNone,
+		ProjectInstructions: "Prefer the design system primitives.",
+	})
+	at := strings.Index(out, "## WORKING PROACTIVELY")
+	if at < 0 {
+		t.Fatalf("prompt is missing the WORKING PROACTIVELY section:\n%s", out)
+	}
+	if projectAt := strings.Index(out, "## PROJECT INSTRUCTIONS"); projectAt < 0 || projectAt > at {
+		t.Error("WORKING PROACTIVELY must come after PROJECT INSTRUCTIONS")
+	}
+	if unsureAt := strings.Index(out, "## WHEN YOU ARE UNSURE"); unsureAt < at {
+		t.Error("WORKING PROACTIVELY must come before WHEN YOU ARE UNSURE")
+	}
+	section := out[at:]
+	for _, want := range []string{"dispatch ask decision", "dispatch ask chore", "dispatch status"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("WORKING PROACTIVELY is missing %q:\n%s", want, section)
+		}
+	}
+}
+
+func TestUnsureSectionPointsAtDispatchAsk(t *testing.T) {
+	out := Build(Request{Role: engineerRole(), Project: sampleProject(), Title: "X", Isolation: roles.IsolationNone})
+	at := strings.Index(out, "## WHEN YOU ARE UNSURE")
+	if at < 0 {
+		t.Fatal("prompt is missing WHEN YOU ARE UNSURE")
+	}
+	if !strings.Contains(out[at:], "dispatch ask") {
+		t.Errorf("WHEN YOU ARE UNSURE should point at dispatch ask:\n%s", out[at:])
+	}
+}
