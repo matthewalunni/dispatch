@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -143,5 +144,35 @@ func TestMigrationIsIdempotent(t *testing.T) {
 			t.Fatalf("open #%d: %v", i+1, err)
 		}
 		s.Close()
+	}
+}
+
+func TestTransitionAskIsConditional(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	in := Ask{ID: "ask_1", TaskID: "task_1", Kind: AskDecision, Title: "t", State: AskOpen,
+		CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)}
+	if err := s.CreateAsk(ctx, &in); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionAsk(ctx, "ask_1", AskOpen, AskAnswered, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionAsk(ctx, "ask_1", AskOpen, AskAnswered, "second"); !errors.Is(err, ErrAskState) {
+		t.Fatalf("second transition = %v, want ErrAskState", err)
+	}
+	got, _ := s.GetAsk(ctx, "ask_1")
+	if got.Answer != "first" || got.AnsweredAt == nil {
+		t.Errorf("ask = %+v, want first answer preserved", got)
+	}
+	if err := s.TransitionAsk(ctx, "ask_1", AskAnswered, AskDelivered, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetAsk(ctx, "ask_1")
+	if got.State != AskDelivered || got.DeliveredAt == nil || got.Answer != "first" {
+		t.Errorf("ask = %+v, want delivered with answer kept", got)
+	}
+	if err := s.TransitionAsk(ctx, "missing", AskOpen, AskAnswered, "x"); err != ErrNotFound {
+		t.Fatalf("missing = %v, want ErrNotFound", err)
 	}
 }

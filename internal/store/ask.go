@@ -173,6 +173,39 @@ func (s *Store) SetAskState(ctx context.Context, id string, state AskState, answ
 	return nil
 }
 
+// ErrAskState is returned when an ask is not in the state a transition
+// expected, typically because another caller moved it first.
+var ErrAskState = errors.New("ask is not in the expected state")
+
+// TransitionAsk moves an ask from one state to another only if it is still in
+// the from state, so concurrent callers cannot both win. It stamps times and
+// records the answer exactly as SetAskState does.
+func (s *Store) TransitionAsk(ctx context.Context, id string, from, to AskState, answer string) error {
+	var res sql.Result
+	var err error
+	switch to {
+	case AskAnswered:
+		res, err = s.db.ExecContext(ctx, `UPDATE asks SET state=?, answer=?, answered_at=? WHERE id=? AND state=?`,
+			string(to), answer, nowString(), id, string(from))
+	case AskDelivered:
+		res, err = s.db.ExecContext(ctx, `UPDATE asks SET state=?, delivered_at=? WHERE id=? AND state=?`,
+			string(to), nowString(), id, string(from))
+	default:
+		res, err = s.db.ExecContext(ctx, `UPDATE asks SET state=? WHERE id=? AND state=?`,
+			string(to), id, string(from))
+	}
+	if err != nil {
+		return fmt.Errorf("update ask: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		if _, err := s.GetAsk(ctx, id); err != nil {
+			return err
+		}
+		return ErrAskState
+	}
+	return nil
+}
+
 // SetReport records a task's status, replacing any earlier report.
 func (s *Store) SetReport(ctx context.Context, r Report) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO task_reports (task_id, line, done, total, updated_at)

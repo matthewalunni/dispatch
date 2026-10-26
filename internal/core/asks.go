@@ -78,7 +78,11 @@ func (a *App) WithdrawAsk(ctx context.Context, askID string) error {
 	if ask.State != store.AskOpen {
 		return fmt.Errorf("ask %s is %s and cannot be withdrawn", ask.ID, ask.State)
 	}
-	return a.store.SetAskState(ctx, ask.ID, store.AskWithdrawn, "")
+	err = a.store.TransitionAsk(ctx, ask.ID, store.AskOpen, store.AskWithdrawn, "")
+	if errors.Is(err, store.ErrAskState) {
+		return fmt.Errorf("ask %s was answered or withdrawn first", ask.ID)
+	}
+	return err
 }
 
 // Answer is a human's reply to an ask.
@@ -143,7 +147,10 @@ func (a *App) AnswerAsk(ctx context.Context, askID string, ans Answer) (*AnswerR
 	}
 
 	text := AnswerPrompt(ask, ans)
-	if err := a.store.SetAskState(ctx, ask.ID, store.AskAnswered, text); err != nil {
+	if err := a.store.TransitionAsk(ctx, ask.ID, store.AskOpen, store.AskAnswered, text); err != nil {
+		if errors.Is(err, store.ErrAskState) {
+			return nil, fmt.Errorf("ask %s was already answered or withdrawn", ask.ID)
+		}
 		return nil, err
 	}
 	reason, delivered := a.deliver(ctx, task, ask.ID, text)
@@ -163,7 +170,13 @@ func (a *App) deliver(ctx context.Context, task store.Task, askID, text string) 
 		}
 		return err.Error(), false
 	}
-	if err := a.store.SetAskState(ctx, askID, store.AskDelivered, ""); err != nil {
+	// The prompt is already in the session, so a failed write is retried once
+	// rather than left to trigger a second prompt on the next hydrate.
+	err := a.store.TransitionAsk(ctx, askID, store.AskAnswered, store.AskDelivered, "")
+	if err != nil && !errors.Is(err, store.ErrAskState) {
+		err = a.store.TransitionAsk(ctx, askID, store.AskAnswered, store.AskDelivered, "")
+	}
+	if err != nil && !errors.Is(err, store.ErrAskState) {
 		return "answer delivered but could not be recorded: " + err.Error(), true
 	}
 	return "", true

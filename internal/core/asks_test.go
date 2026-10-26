@@ -78,8 +78,12 @@ func TestAnswerDeliversAndMarksDelivered(t *testing.T) {
 	if got.State != store.AskDelivered || got.DeliveredAt == nil || got.AnsweredAt == nil {
 		t.Errorf("stored ask = %+v", got)
 	}
-	if _, err := h.AnswerAsk(ctx, ask.ID, ans); err == nil {
+	prompts := len(h.Herdr.Prompts)
+	if _, err := h.AnswerAsk(ctx, ask.ID, Answer{Option: 1}); err == nil {
 		t.Error("answering twice should fail")
+	}
+	if len(h.Herdr.Prompts) != prompts {
+		t.Error("a second answer must not prompt the agent again")
 	}
 }
 
