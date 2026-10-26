@@ -128,3 +128,18 @@ func TestTaskIDIsUniqueAndSortable(t *testing.T) {
 		}
 	}
 }
+
+func TestAskIDIsUniqueAndSortable(t *testing.T) {
+	now := time.Date(2026, 9, 12, 10, 15, 0, 0, time.UTC)
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		id := AskID(now)
+		if seen[id] {
+			t.Fatalf("AskID collided on %q", id)
+		}
+		seen[id] = true
+		if !strings.HasPrefix(id, "ask_20260912T101500_") {
+			t.Fatalf("AskID = %q, want a sortable timestamp prefix", id)
+		}
+	}
+}

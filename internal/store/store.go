@@ -119,6 +119,38 @@ CREATE INDEX IF NOT EXISTS idx_tasks_herdr_agent  ON tasks(herdr_agent);
 		name: "0002_herdr_layout",
 		stmt: `ALTER TABLE tasks ADD COLUMN herdr_layout TEXT NOT NULL DEFAULT 'tab';`,
 	},
+	{
+		// Asks are what an agent files for the human; options and items are
+		// JSON text because they are only ever read back whole.
+		name: "0003_asks_and_reports",
+		stmt: `
+CREATE TABLE IF NOT EXISTS asks (
+    id           TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL DEFAULT '',
+    options_json TEXT NOT NULL DEFAULT '[]',
+    recommended  INTEGER NOT NULL DEFAULT -1,
+    items_json   TEXT NOT NULL DEFAULT '[]',
+    blocks       TEXT NOT NULL DEFAULT '',
+    state        TEXT NOT NULL DEFAULT 'open',
+    answer       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    answered_at  TEXT,
+    delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_asks_task  ON asks(task_id);
+CREATE INDEX IF NOT EXISTS idx_asks_state ON asks(state);
+CREATE TABLE IF NOT EXISTS task_reports (
+    task_id    TEXT PRIMARY KEY,
+    line       TEXT NOT NULL DEFAULT '',
+    done       INTEGER NOT NULL DEFAULT 0,
+    total      INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

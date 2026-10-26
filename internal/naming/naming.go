@@ -63,6 +63,12 @@ func TaskID(now time.Time) string {
 	return fmt.Sprintf("task_%s_%s", now.UTC().Format("20060102T150405"), hex.EncodeToString(buf[:]))
 }
 
+// AskID returns a sortable, collision-resistant ask identifier, in the same
+// format as TaskID.
+func AskID(now time.Time) string {
+	return "ask_" + strings.TrimPrefix(TaskID(now), "task_")
+}
+
 // BranchName builds the branch for a worktree-isolated task.
 func BranchName(prefix, slug string) string {
 	prefix = strings.TrimSpace(prefix)
