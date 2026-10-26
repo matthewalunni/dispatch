@@ -38,27 +38,29 @@ type AskOption struct {
 
 // Ask is something an agent needs from the human.
 type Ask struct {
-	ID, TaskID  string
-	Kind        AskKind
-	Title, Body string
-	Options     []AskOption
-	Recommended int // 0-based index into Options, -1 for chores
-	Items       []string
-	Blocks      string
-	State       AskState
-	Answer      string
-	CreatedAt   time.Time
-	AnsweredAt  *time.Time
-	DeliveredAt *time.Time
+	ID          string      `json:"id"`
+	TaskID      string      `json:"task_id"`
+	Kind        AskKind     `json:"kind"`
+	Title       string      `json:"title"`
+	Body        string      `json:"body,omitempty"`
+	Options     []AskOption `json:"options,omitempty"`
+	Recommended int         `json:"recommended"` // 0-based index into Options, -1 for chores
+	Items       []string    `json:"items,omitempty"`
+	Blocks      string      `json:"blocks,omitempty"`
+	State       AskState    `json:"state"`
+	Answer      string      `json:"answer,omitempty"`
+	CreatedAt   time.Time   `json:"created_at"`
+	AnsweredAt  *time.Time  `json:"answered_at,omitempty"`
+	DeliveredAt *time.Time  `json:"delivered_at,omitempty"`
 }
 
 // Report is a task's latest self-reported status.
 type Report struct {
-	TaskID    string
-	Line      string
-	Done      int
-	Total     int
-	UpdatedAt time.Time
+	TaskID    string    `json:"task_id"`
+	Line      string    `json:"line"`
+	Done      int       `json:"done"`
+	Total     int       `json:"total"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // AskFilter narrows an ask listing; empty fields match everything.

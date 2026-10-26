@@ -59,6 +59,10 @@ type TaskView struct {
 	Effective EffectiveStatus `json:"effective_status"`
 	// HerdrReachable reports whether live state could be read at all.
 	HerdrReachable bool `json:"herdr_reachable"`
+	// Report is the agent's latest self-reported status, if it has sent one.
+	Report *store.Report `json:"report,omitempty"`
+	// OpenAsks are the task's asks that are open or answered but undelivered.
+	OpenAsks []store.Ask `json:"open_asks,omitempty"`
 }
 
 // Age renders the task's age relative to now.
@@ -86,6 +90,20 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 	var changed map[string]store.Status
 	if reachable {
 		changed = a.reconcile(ctx, live)
+		a.deliverPending(ctx, live)
+	}
+
+	ids := make([]string, len(tasks))
+	for i, task := range tasks {
+		ids[i] = task.ID
+	}
+	reports, _ := a.store.Reports(ctx, ids)
+	openAsks := map[string][]store.Ask{}
+	if len(ids) > 0 {
+		asks, _ := a.store.ListAsks(ctx, store.AskFilter{TaskIDs: ids, States: []store.AskState{store.AskOpen, store.AskAnswered}})
+		for _, ask := range asks {
+			openAsks[ask.TaskID] = append(openAsks[ask.TaskID], ask)
+		}
 	}
 
 	out := make([]TaskView, 0, len(tasks))
@@ -93,7 +111,10 @@ func (a *App) Hydrate(ctx context.Context, tasks []store.Task) []TaskView {
 		if status, ok := changed[task.ID]; ok {
 			task.Status = status
 		}
-		view := TaskView{Task: task, HerdrReachable: reachable}
+		view := TaskView{Task: task, HerdrReachable: reachable, OpenAsks: openAsks[task.ID]}
+		if r, ok := reports[task.ID]; ok {
+			view.Report = &r
+		}
 		if agent, ok := lookupAgent(live, task); ok {
 			view.AgentAlive = true
 			view.AgentStatus = agent.Status

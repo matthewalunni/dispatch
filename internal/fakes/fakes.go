@@ -155,6 +155,9 @@ type Herdr struct {
 	StartErr error
 	// PromptErr, when set, fails every PromptAgent call.
 	PromptErr error
+	// PromptErrFor fails PromptAgent for the named targets only, so one agent
+	// can reject a prompt while the others accept it.
+	PromptErrFor map[string]error
 	// ListErr, when set, fails every ListAgents call, as an unreachable herdr would.
 	ListErr error
 	// CreateTabErr, when set, fails every CreateTab call.
@@ -329,6 +332,9 @@ func (h *Herdr) PromptAgent(_ context.Context, target, text string) error {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if err := h.PromptErrFor[target]; err != nil {
+		return err
+	}
 	h.Prompts = append(h.Prompts, Prompt{Target: target, Text: text})
 	return nil
 }
