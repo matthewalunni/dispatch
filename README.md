@@ -371,6 +371,16 @@ dispatch wait <child> --until waiting,done --timeout 20m
 dispatch ls --parent "$DISPATCH_TASK_ID"
 ```
 
+Children's asks go to your human's inbox, not to the orchestrator. The
+orchestrator lists them with `dispatch ls --parent "$DISPATCH_TASK_ID"` and
+keeps coordinating unblocked work.
+
+The shipped role is only seeded when the file is missing, so an existing
+`~/.config/dispatch/roles/orchestrator.yaml` is never overwritten. To pick up
+new orchestrator text, delete that file; the next dispatch command re-seeds it.
+(`dispatch role init` will not do this: it refuses to overwrite an existing
+file and writes a generic template.)
+
 If you want a bare `dispatch run --task "..."` (no `--role`) to go to the
 orchestrator and be broken down, set it as your default:
 

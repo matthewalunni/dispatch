@@ -56,10 +56,32 @@ func Build(req Request) string {
 		section(&b, "PROJECT INSTRUCTIONS", instructions)
 	}
 
+	section(&b, "WORKING PROACTIVELY", strings.TrimSpace(`
+Push the work as far as you can on your own. Make the calls you are qualified
+to make, and state them rather than asking.
+
+Stop only for what only the human can do or decide: accounts, billing,
+credentials, product direction, and anything irreversible or outward-facing.
+
+When you do need the human, file it instead of writing a long message:
+
+  dispatch ask decision "<question>" --option "<label> | <consequence>" \
+    --option "..." --recommend <n>
+  dispatch ask chore "<what they must do>" --item "<step>" --blocks "<what waits on it>"
+
+Then say so in a line or two and carry on with any work the ask does not
+block. The answer will arrive in this conversation, starting "[dispatch]".
+
+Keep a one-line status current at meaningful milestones:
+
+  dispatch status "<what you are doing now>" [--progress 2/3]`))
+
 	section(&b, "WHEN YOU ARE UNSURE", strings.TrimSpace(`
 If product intent or project conventions remain ambiguous after you have
 looked, say so explicitly and ask. Do not invent a rule and proceed as though
-the project had stated it.`))
+the project had stated it.
+
+File the question with `+"`dispatch ask`"+`.`))
 
 	return strings.TrimRight(b.String(), "\n") + "\n"
 }

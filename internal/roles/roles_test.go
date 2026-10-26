@@ -501,3 +501,24 @@ func TestOrchestratorRoleIsSeededAndValid(t *testing.T) {
 		t.Error("orchestrator should delegate with its own task id as the parent")
 	}
 }
+
+func TestOrchestratorKnowsAsksGoToTheHuman(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Seed(dir); err != nil {
+		t.Fatal(err)
+	}
+	set, err := Resolve(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	role, err := set.Get("orchestrator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(role.Instructions, `dispatch ls --parent "$DISPATCH_TASK_ID"`) {
+		t.Error("orchestrator should list its children's open asks")
+	}
+	if !strings.Contains(role.Instructions, "asks go to the human") {
+		t.Error("orchestrator should state that children's asks go to the human")
+	}
+}
