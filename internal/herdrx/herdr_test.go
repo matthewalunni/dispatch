@@ -436,3 +436,30 @@ func TestCloseSessionMatchesWhatWasCreated(t *testing.T) {
 		t.Errorf("dispatch must not close a workspace it does not own: %s", args)
 	}
 }
+
+func TestReadAgentAsksForRecentTextAndReturnsIt(t *testing.T) {
+	binary, logPath := stubHerdr(t, `echo '{"id":"x","result":{"type":"agent_read","read":{"text":"Proceed? (y/n)"}}}'`)
+
+	got, err := NewCLI(binary, "").ReadAgent(context.Background(), "fix-login", 6)
+	if err != nil {
+		t.Fatalf("ReadAgent: %v", err)
+	}
+	if got != "Proceed? (y/n)" {
+		t.Errorf("text = %q", got)
+	}
+	if args := readLog(t, logPath); !strings.Contains(args, "agent read fix-login --source recent --lines 6 --format text") {
+		t.Errorf("argv = %s", args)
+	}
+}
+
+func TestReadAgentAcceptsPlainText(t *testing.T) {
+	binary, _ := stubHerdr(t, `printf 'line one\nline two\n'`)
+
+	got, err := NewCLI(binary, "").ReadAgent(context.Background(), "fix-login", 2)
+	if err != nil {
+		t.Fatalf("ReadAgent: %v", err)
+	}
+	if got != "line one\nline two" {
+		t.Errorf("text = %q", got)
+	}
+}

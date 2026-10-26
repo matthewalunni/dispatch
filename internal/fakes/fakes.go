@@ -158,6 +158,10 @@ type Herdr struct {
 	// PromptErrFor fails PromptAgent for the named targets only, so one agent
 	// can reject a prompt while the others accept it.
 	PromptErrFor map[string]error
+	// Screens maps an agent name to what ReadAgent returns for it.
+	Screens map[string]string
+	// ReadErr, when set, fails every ReadAgent call.
+	ReadErr error
 	// ListErr, when set, fails every ListAgents call, as an unreachable herdr would.
 	ListErr error
 	// CreateTabErr, when set, fails every CreateTab call.
@@ -337,6 +341,15 @@ func (h *Herdr) PromptAgent(_ context.Context, target, text string) error {
 	}
 	h.Prompts = append(h.Prompts, Prompt{Target: target, Text: text})
 	return nil
+}
+
+func (h *Herdr) ReadAgent(_ context.Context, target string, _ int) (string, error) {
+	if h.ReadErr != nil {
+		return "", h.ReadErr
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Screens[target], nil
 }
 
 func (h *Herdr) ListAgents(context.Context) ([]herdrx.Agent, error) {
